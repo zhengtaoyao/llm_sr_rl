@@ -1,0 +1,27 @@
+nu: 1e-4
+
+alpha: 3
+tau: 3
+fix_u0: True  # [True,False] True--fix; False--vary
+
+alpha_Q: 0.005  # Q Wiener process
+kappa: 10
+sigma: 0.005
+truncation: 128  # [32,64,128,256]
+
+s: 64  # Spatial Resolution
+sub_x: 4
+
+T: 1  # End time
+delta_t: 1e-3  # time meshsize
+sub_t: 10  # downsample: 1000 -> 100
+
+N: 1200  # Number of solutions to generate
+bsize: 100  # Batch size (Solve equations in batches)
+merge_data: True
+
+seed: 42
+
+save_dir: '../results/'
+# Data will be saved in a folder under this 'save_dir'.
+# Folder name will be 'NS_xi_trc64' if fix_u0=True and truncation=64, for example.

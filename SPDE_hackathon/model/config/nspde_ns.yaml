@@ -1,0 +1,36 @@
+model: NSPDE
+equation: NS
+data: NS_u0_xi_trc128
+
+data_path: '../../data_gen/results/${data}/merged_ns_1200.mat'
+sub_x: 1
+T: 100
+sub_t: 1
+
+hidden_channels: 32   # grid search: [32]
+n_iter: 1  # grid search: [1,2,3,4]
+# Used in SPDEBench: NS:1
+modes: [16,16,16]    # grid search: [[16,16,16],[8,8,8]]
+# Used in SPDEBench: NS:[16,16,16]
+solver: 'fixed_point'
+
+ntrain: 840
+nval: 180
+ntest: 180
+batch_size: 20
+epochs: 1000
+weight_decay: 1e-3
+learning_rate: 0.001
+plateau_patience: 20
+factor: 0.5
+delta: 0.0001
+plateau_terminate: 50
+
+print_every: 10
+
+seed: 3407
+
+save_dir: '../result/${model}_${equation}/'
+checkpoint_file: '${data}.pth'
+
+log_file: '${data}_log'

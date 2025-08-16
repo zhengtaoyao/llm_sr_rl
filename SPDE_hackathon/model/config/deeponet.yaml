@@ -1,0 +1,37 @@
+model: DeepONet
+equation: Phi41+
+data: Phi41+sigma01_xi_trc128_1200
+
+data_path: '../../data_gen/results/${equation}/${data}.mat'
+dim_x: 128
+T: 51
+sub_t: 1
+normalizer: True
+
+width: 512  # grid search: [128, 256, 512]
+# Used in SPDEBench: Phi41+sigma01:512, Phi41+sigma1:128
+branch_depth: 3  # grid search: [2, 3, 4]
+# Used in SPDEBench: Phi41+sigma01:3, Phi41+sigma1:4
+trunk_depth: 3  # grid search: [2, 3, 4]
+# Used in SPDEBench: Phi41+sigma01:3, Phi41+sigma1:3
+
+ntrain: 840
+nval: 180
+ntest: 180
+batch_size: 20
+epochs: 1000
+learning_rate: 0.001
+#scheduler_step: 100
+#scheduler_gamma: 0.5
+plateau_patience: 50
+delta: 0.0001
+plateau_terminate: 100
+
+print_every: 50
+
+seed: 3407
+
+save_dir: '../result/${model}_${equation}/'
+checkpoint_file: '${data}.pth'
+
+log_file: '${data}_log'

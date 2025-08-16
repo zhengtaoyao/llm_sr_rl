@@ -1,0 +1,28 @@
+model: DLR
+equation: NS
+data: NS_u0_xi_trc128
+
+data_path: '../../data_gen/results/${data}/merged_ns_1200.mat'
+sub_x: 1
+T: 100
+sub_t: 1
+
+height: 2
+nu: 1e-4
+
+ntrain: 840
+nval: 180
+ntest: 180
+batch_size: 64
+epochs: 1000 #500,1000
+learning_rate: 1e-2
+weight_decay: 1e-5
+delta: 0.0001
+plateau_terminate: 100
+
+print_every: 100
+
+seed: 3407
+
+save_dir: '../result/${model}_${equation}/'
+checkpoint_file: '${data}.pth'

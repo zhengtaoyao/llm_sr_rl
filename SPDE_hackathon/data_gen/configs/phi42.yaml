@@ -1,0 +1,19 @@
+sim:
+  a: 0
+  b: 1.0
+  Nx: 31  
+  c: 0
+  d: 1.0
+  Ny: 31  
+  s: 0
+  t: 0.025
+  Nt: 250  
+  num: 1200 # number of solutions
+  eps: 128 # truncation degree of noise
+  sigma: 0.1  # coefficient of additive diffusive term
+  fix_u0: True  # [True,False] True--fix; False--vary
+
+seed: 42
+
+save_dir: '../results/Phi42+/'
+save_name: 'Phi41+'
