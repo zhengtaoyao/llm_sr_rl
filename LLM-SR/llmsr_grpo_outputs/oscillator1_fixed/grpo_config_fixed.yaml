@@ -1,0 +1,154 @@
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 1.0
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.001
+    horizon: 10000
+    target_kl: 0.1
+data:
+  train_files:
+  - llmsr_grpo_outputs/oscillator1_train.parquet
+  val_files:
+  - llmsr_grpo_outputs/oscillator1_train.parquet
+  train_batch_size: 48
+  val_batch_size: 24
+  max_prompt_length: 1024
+  max_response_length: 512
+  filter_overlong_prompts: true
+  truncation: error
+  reward_fn_key: data_source
+  shuffle: true
+actor_rollout_ref:
+  model:
+    path: /storage/home/westlakeLab/zhangjunlei/Qwen/Qwen2.5-Coder-7B-Instruct
+    tokenizer_only: false
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+    model_dtype: bf16
+  actor:
+    strategy: fsdp
+    optim:
+      lr: 1.0e-06
+      eps: 1.0e-08
+      weight_decay: 0.01
+    ppo_mini_batch_size: 24
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    entropy_coeff: 0.0
+    entropy_from_logits_with_chunking: false
+    clip_ratio: 0.2
+    ppo_epochs: 1
+    loss_agg_mode: token-mean
+    use_dynamic_bsz: true
+    ulysses_sequence_parallel_size: 1
+    use_remove_padding: true
+    use_fused_kernels: false
+    use_torch_compile: true
+    entropy_checkpointing: false
+    grad_clip: 1.0
+    shuffle: false
+    data_loader_seed: null
+    policy_loss:
+      loss_mode: vanilla
+    fsdp_config:
+      fsdp_size: 6
+      param_offload: true
+      optimizer_offload: true
+      forward_prefetch: false
+      wrap_policy:
+        min_num_params: 0
+    checkpoint:
+      save_contents:
+      - model
+      - optimizer
+      - extra
+      load_contents:
+      - model
+      - optimizer
+      - extra
+  ref:
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 1
+    ulysses_sequence_parallel_size: 1
+    log_prob_use_dynamic_bsz: true
+    log_prob_max_token_len_per_gpu: 4096
+    use_remove_padding: true
+    use_fused_kernels: false
+    entropy_from_logits_with_chunking: false
+    use_torch_compile: true
+    entropy_checkpointing: false
+    grad_clip: 1.0
+    fsdp_config:
+      forward_prefetch: false
+      param_offload: true
+      wrap_policy:
+        min_num_params: 0
+  rollout:
+    name: vllm
+    mode: sync
+    'n': 2
+    max_new_tokens: 512
+    load_format: auto
+    dtype: bfloat16
+    prompt_length: 1024
+    response_length: 512
+    max_model_len: 4096
+    enforce_eager: true
+    enable_prefix_caching: false
+    disable_log_stats: false
+    enable_chunked_prefill: false
+    disable_custom_all_reduce: true
+    gpu_memory_utilization: 0.4
+    max_num_batched_tokens: 4096
+    seed: 0
+    tensor_model_parallel_size: 1
+    temperature: 0.8
+    top_p: 0.9
+    top_k: 30
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 1
+    val_kwargs:
+      do_sample: true
+      temperature: 0.8
+      top_p: 0.9
+      top_k: 30
+      max_new_tokens: 512
+      'n': 1
+    calculate_log_probs: false
+    free_cache_engine: true
+critic:
+  strategy: fsdp
+  ppo_mini_batch_size: 24
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: true
+custom_reward_function:
+  path: ./llmsr_grpo_outputs/oscillator1_fixed/llmsr_reward.py
+  name: compute_score
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+trainer:
+  total_epochs: 2
+  total_training_steps: null
+  project_name: llm_sr_grpo_fixed
+  experiment_name: oscillator1_fixed_test
+  logger:
+  - console
+  n_gpus_per_node: 6
+  nnodes: 1
+  save_freq: 2
+  test_freq: 1
+  val_before_train: true
+  default_local_dir: ./llmsr_grpo_outputs/oscillator1_fixed
+  device: cuda
+  resume_mode: disable
+ray_init:
+  num_cpus: null

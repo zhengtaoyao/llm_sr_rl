@@ -1,0 +1,104 @@
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 1.0
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.001
+    horizon: 10000
+    target_kl: 0.1
+data:
+  train_files:
+  - ./llmsr_grpo_outputs/oscillator1/llmsr_train.parquet
+  val_files:
+  - ./llmsr_grpo_outputs/oscillator1/llmsr_train.parquet
+  train_batch_size: 4
+  val_batch_size: 16
+  max_prompt_length: 1024
+  max_response_length: 512
+  filter_overlong_prompts: true
+  truncation: error
+  reward_fn_key: data_source
+  shuffle: true
+actor_rollout_ref:
+  model:
+    path: mistralai/Mixtral-8x7B-Instruct-v0.1
+    tokenizer_only: true
+  actor:
+    strategy: fsdp
+    optim:
+      lr: 1.0e-06
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 4
+    use_kl_loss: false
+    entropy_coeff: 0
+    clip_ratio: 0.2
+    ppo_epochs: 1
+    loss_agg_mode: token-mean
+    use_dynamic_bsz: true
+    fsdp_config:
+      fsdp_size: 2
+      param_offload: true
+      optimizer_offload: true
+      grad_offload: true
+      forward_prefetch: false
+      wrap_policy: {}
+      model_dtype: bf16
+  rollout:
+    name: http
+    mode: sync
+    http_url: http://localhost:5000
+    'n': 2
+    max_new_tokens: 512
+    temperature: 0.8
+    top_p: 0.9
+    top_k: 30
+    timeout: 60
+    repeat_prompt: 1
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 4
+    val_kwargs:
+      do_sample: true
+      'n': 2
+      max_new_tokens: 512
+      temperature: 0.8
+      top_p: 0.9
+      top_k: 30
+    multi_turn:
+      enable: false
+  ref:
+    disable: true
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 4
+  hybrid_engine: true
+critic:
+  strategy: fsdp
+  ppo_mini_batch_size: 16
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 4
+  use_dynamic_bsz: true
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+custom_reward_function:
+  path: ./llmsr_grpo_outputs/oscillator1/llmsr_reward.py
+  name: compute_score
+trainer:
+  total_epochs: 5
+  total_training_steps: null
+  project_name: llm_sr_grpo_http
+  experiment_name: llmsr_grpo_http_oscillator1
+  logger:
+  - console
+  n_gpus_per_node: 2
+  nnodes: 1
+  save_freq: -1
+  test_freq: 5
+  val_before_train: true
+  default_local_dir: ./llmsr_grpo_outputs/oscillator1
+  device: cuda
+ray_init:
+  num_cpus: null
