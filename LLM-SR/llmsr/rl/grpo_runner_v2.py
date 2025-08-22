@@ -172,8 +172,19 @@ def create_llmsr_dataset_v2(
     dataset_entries: List[Dict[str, Any]] = []
     for i in range(len(df_s)):
         row = df_s.iloc[i]
-        # 对话格式（chat），只含 user 内容
-        chat_prompt = [{"role": "user", "content": composed_prompt}]
+        # 增加 system 约束说明；user 中放入规范 + few-shot
+        system_prefix = (
+            "You generate equation skeletons under grammar/AST constraints.\n"
+            "- Prefer valid mathematical expressions over prose.\n"
+            "- Optionally use EDIT DSL to modify a provided base expression.\n"
+            "EDIT Usage: 'EDIT ADD <expr>' | 'EDIT MUL <expr>' | 'EDIT REPLACE <old> => <new>'\n"
+            "Return final Pythonic expression or a minimal function body."
+        )
+        chat_prompt = [
+            {"role": "system", "content": system_prefix},
+            {"role": "user", "content": composed_prompt},
+        ]
+
         entry = {
             "prompt": chat_prompt,
             "data_source": "llm_sr_train_v2",
@@ -182,6 +193,8 @@ def create_llmsr_dataset_v2(
                 "grid_group": int(row["grid_group"]),
                 # 记录原始数据点用于潜在物理一致性与过程奖励
                 "data_point": row.drop("grid_group").to_dict(),
+                # 可选传递基底表达式（由后续管线填充），用于 EDIT 模式
+                "base_impl": None,
             },
         }
         dataset_entries.append(entry)

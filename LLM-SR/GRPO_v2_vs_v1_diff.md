@@ -9,7 +9,7 @@
   - 2.4 入口集成：main.py
 - 3. v2 算法设计思想（为何这样设计）
   - 3.1 奖励密化与成分化
-  - 3.2 受约束的动作/解码与常数分离
+  - 3.2 受约束的动作/解码与常数分离（含 Grammar/AST 与 EDIT DSL）
   - 3.3 记忆/多样性：轻量岛屿检索 few-shot
   - 3.4 稳健的 GRPO 配置（KL、长度偏置、组内采样）
 - 4. v2 核心代码结构与函数职责
@@ -87,9 +87,12 @@
 - v2 将奖励拆成四类：拟合、简洁（MDL 近似）、物理一致（可检验的软约束）、过程（如常数拟合是否收敛）。
 - 将各成分做加权融合并在组内做 rank 归一，弱化尺度与长度偏置，稳定 GRPO 的组内优势估计。
 
-#### 3.2 受约束的动作/解码与常数分离
+#### 3.2 受约束的动作/解码与常数分离（含 Grammar/AST 与 EDIT DSL）
 - v2 沿用 LLM-SR 原有“骨架→常数拟合→再细化”的思想：生成结构表达式，常数由后验拟合评估是否可收敛（计入过程奖励）。
-- 推广到 grammar/AST 约束与编辑式动作是下一步可扩展（当前已具备接口与奖励对齐）。
+- 新增：
+  - 在数据集侧为 prompt 注入 `system` 约束，明确 grammar/AST 规则与 EDIT DSL 用法（ADD/MUL/REPLACE）。
+  - 在奖励侧识别 `EDIT` 响应并基于 `extra_info.base_impl` 应用 `_apply_edit_dsl`，随后用 `_ast_is_legal` 做 AST 合法性检查（函数/变量白名单 + 深度约束）。
+- 小步编辑可显著改善信用分配与可执行率，降低一次性从零生成复杂表达式的难度。
 
 #### 3.3 记忆/多样性：轻量岛屿检索 few-shot
 - FunSearch/LLM-SR 中“候选池→评估→检索再生成”的范式有效提升多样性与样本效率。
@@ -109,8 +112,9 @@
 - `_extract_prompt_header(spec_text)`：从规范模版抽出 `@equation.evolve` 之前的前缀，用作 base prompt。
 - `create_llmsr_dataset_v2(...)`：
   - 拼接 few-shot（来自记忆库）到 base prompt；
+  - 提示结构包含 `system`（grammar/EDIT 规则）与 `user`（规范+few-shot）；
   - 可选网格/聚类分桶采样；
-  - 生成 `llmsr_train_v2.parquet`（VERL 训练数据）。
+  - 生成 `llmsr_train_v2.parquet`（VERL 训练数据），并在 `extra_info` 中预留 `base_impl` 接口。
 - `create_llmsr_reward_file_v2(...)`：生成 VERL 自定义奖励入口 `llmsr_reward_v2.py`，转发到 `simple_verl_reward_v2.compute_score`。
 - `create_grpo_config_v2(...)`：
   - GRPO 直连配置：KL 加显式 loss、token-mean、微批 1、rollout.n 组内多样采样；
@@ -124,13 +128,16 @@
 - `compute_score(...)`：
   - 提取表达式 → 计算 NMSE/复杂度/物理一致/过程奖励；
   - 按权重融合并（可选）组内排名归一；
-  - 若设置 `LLMSR_OUTPUT_DIR`，将每条样本落盘至 `sample.jsonl`（含 `expr/raw/reward/nmse/complexity/...`）。
-- `_load_training_data_from_path`：读取CSV，限制样本上限（默认 256）以控制速度。
-- `_extract_math_expr`/`_valid_expr`：从代码中鲁棒提取数学表达式。
-- `_compute_nmse`：安全环境下 eval 预测，计算 NMSE。
-- `_estimate_ast_complexity`：近似复杂度估计（算符/函数/数值/标识符计数）。
-- `_physical_consistency`：基础物理/数值一致性软约束（如 log 正域）。
-- `_constants_optimized`：简单线性缩放拟合判断“常数可优化性”，作为过程奖励的一部分。
+  - 支持 EDIT 模式（对 `extra_info.base_impl` 做 ADD/MUL/REPLACE 小步编辑）；
+  - AST 合法性检查（函数/变量白名单 + 树深限制），不合法样本强惩罚；
+  - 若设置 `LLMSR_OUTPUT_DIR`，将每条样本落盘至 `sample.jsonl`（含 `expr/raw/reward/nmse/complexity/edit_mode/ast_ok/...`）。
+- 其余辅助函数：
+  - `_load_training_data_from_path`：读取CSV并限样本数；
+  - `_extract_math_expr`/`_valid_expr`：表达式抽取与基本合法性；
+  - `_compute_nmse`：NMSE 计算；
+  - `_estimate_ast_complexity`：复杂度近似；
+  - `_physical_consistency`：基础物理软约束；
+  - `_constants_optimized`：常数可优化性。
 
 #### 4.3 `main.py` 新增参数与分支
 - 新增 `--use_rl_v2`、`--kl_coef`、`--max_prompt_length`、`--max_new_tokens`、`--max_model_len`、`--few_shot_k`、`--grid_train_data/--num_grid_groups`。
@@ -160,12 +167,13 @@
   - `llmsr_grpo_outputs/<exp>/grpo_config_v2.yaml`
   - `llmsr_grpo_outputs/<exp>/sample.jsonl`
   - `llmsr_grpo_outputs/<exp>/best_reward.json`、`best_mse.json`
+  - EDIT/AST 相关字段：`sample.jsonl` 中包含 `edit_mode`、`ast_ok`、`base_expr`。
 
 ---
 
 ### 7. 常见问题与排查
 - 奖励始终很低/样本大量不可解析：
-  - 检查表达式抽取是否失败；缩短 `max_new_tokens` 限制冗余；提高 few-shot 质量。
+  - 检查表达式抽取是否失败；缩短 `max_new_tokens` 限制冗余；提高 few-shot 质量；检查 `ast_ok` 字段是否大量为 false。
 - KL 漂移过快或发散：
   - 减小 `--learning_rate` 或增大 `--kl_coef`；观察 `rollout.n` 是否足够。
 - 多样性塌缩：

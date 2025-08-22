@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, List, Tuple
 import numpy as np
 import os, json, time
+import ast
 
 
 def compute_score(
@@ -64,7 +65,19 @@ def compute_score(
 
     rewards: List[float] = []
     for i, code in enumerate(solution_strs):
-        expr = _extract_math_expr(code)
+        base_impl = None
+        if i < len(extra_infos) and isinstance(extra_infos[i], dict):
+            base_impl = extra_infos[i].get("base_impl")
+
+        # 支持 EDIT DSL：若包含 EDIT 指令则基于 base_impl 生成表达式
+        edit_mode = False
+        expr = ""
+        if isinstance(code, str) and (code.strip().startswith("EDIT") or "\nEDIT" in code):
+            base_expr = _extract_math_expr(base_impl) if base_impl else None
+            expr = _apply_edit_dsl(base_expr, code)
+            edit_mode = True
+        if not expr:
+            expr = _extract_math_expr(code)
         if not expr:
             rewards.append(-1.0)
             # 记录失败样本
@@ -74,6 +87,7 @@ def compute_score(
                         "timestamp": time.time(),
                         "expr": None,
                         "raw": code,
+                        "base_expr": _extract_math_expr(base_impl) if base_impl else None,
                         "reward": -1.0,
                         "nmse": None,
                         "complexity": None,
@@ -81,6 +95,36 @@ def compute_score(
                         "r_simp": None,
                         "r_phys": None,
                         "r_proc": None,
+                        "edit_mode": edit_mode,
+                        "ast_ok": False,
+                        "data_path": data_path,
+                    }
+                    with open(jsonl_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+            continue
+
+        # 语法/AST 约束检查
+        ast_ok = _ast_is_legal(expr, allowed_vars=var_names, max_depth=12)
+        if not ast_ok:
+            rewards.append(-1.0)
+            if jsonl_path:
+                try:
+                    rec = {
+                        "timestamp": time.time(),
+                        "expr": expr,
+                        "raw": code,
+                        "base_expr": _extract_math_expr(base_impl) if base_impl else None,
+                        "reward": -1.0,
+                        "nmse": None,
+                        "complexity": None,
+                        "r_fit": None,
+                        "r_simp": None,
+                        "r_phys": None,
+                        "r_proc": None,
+                        "edit_mode": edit_mode,
+                        "ast_ok": False,
                         "data_path": data_path,
                     }
                     with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -111,6 +155,7 @@ def compute_score(
                     "timestamp": time.time(),
                     "expr": expr,
                     "raw": code,
+                    "base_expr": _extract_math_expr(base_impl) if base_impl else None,
                     "reward": float(reward),
                     "nmse": float(nmse),
                     "complexity": float(complexity),
@@ -118,6 +163,8 @@ def compute_score(
                     "r_simp": float(r_simp),
                     "r_phys": float(r_phys),
                     "r_proc": float(r_proc),
+                    "edit_mode": edit_mode,
+                    "ast_ok": True,
                     "data_path": data_path,
                 }
                 with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -206,6 +253,99 @@ def _valid_expr(expr: str) -> bool:
         return False
     has = [r'[a-zA-Z_][a-zA-Z0-9_]*', r'-?[0-9]*\.?[0-9]+', r'[\+\-\*/\(\)]', r'(sin|cos|tan|exp|log|sqrt|abs|tanh)\(']
     return any(re.search(p, expr) for p in has)
+
+
+def _ast_is_legal(expr: str, allowed_vars: List[str], max_depth: int = 12) -> bool:
+    """解析 expr 的 AST，仅允许安全节点与白名单函数/变量，并限制深度。"""
+    allowed_funcs = {"sin", "cos", "tan", "exp", "log", "sqrt", "abs", "tanh"}
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except Exception:
+        return False
+
+    def depth(node: ast.AST) -> int:
+        if not list(ast.iter_child_nodes(node)):
+            return 1
+        return 1 + max(depth(ch) for ch in ast.iter_child_nodes(node))
+
+    if depth(tree) > max_depth:
+        return False
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.USub,
+        ast.UAdd,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Tuple,
+    )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return False
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                return False
+            if node.func.id not in allowed_funcs:
+                return False
+        if isinstance(node, ast.Name):
+            if node.id not in allowed_vars:
+                return False
+    return True
+
+
+def _apply_edit_dsl(base_expr: str | None, code: str) -> str:
+    """基于简单 EDIT DSL 将 base_expr 进行小步编辑；不合法则返回空串。
+
+    支持指令（匹配第一条即可）：
+    - EDIT ADD <expr>    ->  (base) + (expr)
+    - EDIT MUL <expr>    ->  (base) * (expr)
+    - EDIT REPLACE <old> => <new>   （对 base 字符串替换一次）
+    若无 base_expr 则返回空串。
+    """
+    if not base_expr or not isinstance(code, str):
+        return ""
+    lines = [l.strip() for l in code.strip().splitlines() if l.strip()]
+    edit_line = None
+    for l in lines:
+        if l.startswith("EDIT "):
+            edit_line = l
+            break
+    if not edit_line:
+        return ""
+
+    body = edit_line[len("EDIT "):].strip()
+    # REPLACE
+    if body.startswith("REPLACE ") and "=>" in body:
+        payload = body[len("REPLACE "):].strip()
+        try:
+            left, right = payload.split("=>", 1)
+            old = left.strip()
+            new = right.strip()
+            if old:
+                return base_expr.replace(old, new, 1)
+        except Exception:
+            return ""
+    # ADD
+    if body.startswith("ADD "):
+        term = body[len("ADD "):].strip()
+        if term:
+            return f"({base_expr})+({term})"
+    # MUL
+    if body.startswith("MUL "):
+        term = body[len("MUL "):].strip()
+        if term:
+            return f"({base_expr})*({term})"
+    return ""
 
 
 def _compute_nmse(expr: str, X: np.ndarray, y: np.ndarray, var_names: List[str]) -> float:
