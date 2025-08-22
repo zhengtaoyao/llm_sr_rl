@@ -321,7 +321,7 @@ def create_grpo_config_direct(
     """
     
     # 🔥 批量大小配置 - 参照VERL官方示例，针对7B模型优化内存
-    gpus = kwargs.get('gpus', 6)
+    gpus = kwargs.get('gpus', 8)
     micro_batch_size_per_gpu = 1  # 🔥 减少到1以节省内存
     rollout_n = kwargs.get('rollout_n', 4)  # 响应数量
     
@@ -341,9 +341,9 @@ def create_grpo_config_direct(
     print(f"  🔥 内存优化: 启用参数/优化器offload")
     
     # 计算安全的 token 长度配置，避免 max_seq_len 超过阈值
-    prompt_len_cfg = kwargs.get('max_prompt_length', 1024)
-    response_len_cfg = kwargs.get('max_new_tokens', 2048)
-    safe_max_token_len = max(4096, int(prompt_len_cfg + response_len_cfg + 256))
+    prompt_len_cfg = kwargs.get('max_prompt_length', 2048)
+    response_len_cfg = kwargs.get('max_new_tokens', 4096)
+    safe_max_token_len = max(12288, int(prompt_len_cfg + response_len_cfg + 512))
 
     # 直连模式 GRPO 配置
     # 按需选择 logger
@@ -373,8 +373,8 @@ def create_grpo_config_direct(
             "val_files": [dataset_path],
             "train_batch_size": prompt_bsz,  # 🔥 使用计算得出的训练批量
             "val_batch_size": prompt_mini_bsz,  # 🔥 验证用小批量
-            "max_prompt_length": kwargs.get('max_prompt_length', 1024),
-            "max_response_length": kwargs.get('max_response_length', 1024),
+            "max_prompt_length": kwargs.get('max_prompt_length', 2048),
+            "max_response_length": kwargs.get('max_response_length', 2048),
             "filter_overlong_prompts": True,
             "truncation": "error",
             "reward_fn_key": "data_source",
@@ -447,19 +447,19 @@ def create_grpo_config_direct(
                 "name": "vllm",
                 "mode": "sync",  # 🔥 CRITICAL: 必需字段
                 "n": rollout_n,  # 4
-                "max_new_tokens": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
+                "max_new_tokens": kwargs.get('max_new_tokens', 4096),  # 🔥 增大生成长度
                 "load_format": "auto",
                 "dtype": "bfloat16",
-                "prompt_length": kwargs.get('max_prompt_length', 1024),
-                "response_length": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
-                "max_model_len": kwargs.get('max_model_len', 2048),  # 🔥 减小到2048以匹配max_num_batched_tokens
+                "prompt_length": kwargs.get('max_prompt_length', 2048),
+                "response_length": kwargs.get('max_new_tokens', 4096),
+                "max_model_len": kwargs.get('max_model_len', 8192),
                 "enforce_eager": True,
                 "enable_prefix_caching": False,
                 "disable_log_stats": False,
                 "enable_chunked_prefill": False,
                 "disable_custom_all_reduce": True,
                 "gpu_memory_utilization": 0.6,
-                "max_num_batched_tokens": 2048,  # 🔥 减少批量token数量以适应8卡配置
+                "max_num_batched_tokens": 4096,  # 🔥 提升批量 token 数
                 "seed": 0,
                 "log_prob_use_dynamic_bsz": True,
                 "ulysses_sequence_parallel_size": 1,  # 与 actor 保持一致
@@ -479,7 +479,7 @@ def create_grpo_config_direct(
                     "temperature": kwargs.get('temperature', 0.8),
                     "top_p": kwargs.get('top_p', 0.9),
                     "top_k": kwargs.get('top_k', 30),
-                    "max_new_tokens": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
+                    "max_new_tokens": kwargs.get('max_new_tokens', 4096),
                     "n": 1  # 🔥 CRITICAL: 添加缺失的验证时采样数量
                 },
                 # 🔥 CRITICAL: 添加缺失的rollout字段 (直连模式)

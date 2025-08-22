@@ -42,6 +42,22 @@ parser.add_argument('--gpus', type=int, default=2,
                     help='Number of GPUs to use for GRPO training')
 parser.add_argument('--output_dir', type=str, default=None,
                     help='Output directory for GRPO training results')
+parser.add_argument('--use_rl_v2', action='store_true', default=False,
+                    help='Use GRPO v2 pipeline with dense multi-component reward and memory retrieval')
+parser.add_argument('--grid_train_data', action='store_true', default=False,
+                    help='Enable grid-based sampling for dataset (v2)')
+parser.add_argument('--num_grid_groups', type=int, default=10,
+                    help='Number of grid groups for dataset (v2)')
+parser.add_argument('--kl_coef', type=float, default=1e-3,
+                    help='KL coefficient for v2 GRPO')
+parser.add_argument('--max_prompt_length', type=int, default=2048,
+                    help='Max prompt length for v2 GRPO')
+parser.add_argument('--max_new_tokens', type=int, default=1024,
+                    help='Max new tokens for v2 GRPO')
+parser.add_argument('--max_model_len', type=int, default=8192,
+                    help='Max model len for v2 GRPO')
+parser.add_argument('--few_shot_k', type=int, default=3,
+                    help='Few-shot examples from memory for v2 dataset builder')
 
 # 🌐 HTTP GRPO-related arguments
 parser.add_argument('--use_http', action='store_true', default=False,
@@ -58,10 +74,10 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     
-    if args.use_rl:
+    if args.use_rl or args.use_rl_v2:
         # 🚀 GRPO Training Mode
         print("=" * 60)
-        print("🔥 LLM-SR GRPO Training Mode")
+        print("🔥 LLM-SR GRPO Training Mode" + (" (v2)" if args.use_rl_v2 else ""))
         print("=" * 60)
         
         # Validate required arguments for GRPO
@@ -87,8 +103,29 @@ if __name__ == '__main__':
         print(f"⚙️ Epochs: {args.epochs}, Batch Size: {args.batch_size}")
         print(f"🎯 Learning Rate: {args.learning_rate}, Group Size: {args.rollout_n}")
         
+        # v2 直连优先（不支持 HTTP）
+        if args.use_rl_v2:
+            print("🚀 Using GRPO v2 pipeline (direct mode only)")
+            from llmsr.rl.grpo_runner_v2 import train_llmsr_grpo_v2
+            train_llmsr_grpo_v2(
+                template_path=template_path,
+                data_path=data_path,
+                model_path=args.model_path,
+                output_dir=output_dir,
+                grid_train_data=args.grid_train_data,
+                num_grid_groups=args.num_grid_groups,
+                gpus=args.gpus,
+                rollout_n=args.rollout_n,
+                kl_coef=args.kl_coef,
+                max_prompt_length=args.max_prompt_length,
+                max_new_tokens=args.max_new_tokens,
+                max_model_len=args.max_model_len,
+                learning_rate=args.learning_rate,
+                epochs=args.epochs,
+                few_shot_k=args.few_shot_k,
+            )
         # 🌐 HTTP GRPO Training Mode (优先检查)
-        if args.use_http:
+        elif args.use_http:
             print("🌐 Using local HTTP LLM service for GRPO training")
             
             # Import HTTP GRPO runner

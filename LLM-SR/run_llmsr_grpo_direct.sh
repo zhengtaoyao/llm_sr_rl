@@ -6,10 +6,10 @@
 
 set -e
 
-# 🔧 GPU 配置：直连模式使用所有 6 张 GPU 进行训练
+# 🔧 GPU 配置：直连模式使用所有 8 张 GPU 进行训练
 # 直连模式不需要单独的LLM服务GPU，Actor进程直接加载模型
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
-export GPUS=6
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export GPUS=8
 
 # 🎯 训练配置 - 参照HTTP模式但使用直连
 PROBLEM_NAME=${PROBLEM_NAME:-"oscillator1"}
@@ -36,7 +36,7 @@ PURPLE='\033[0;35m'
 NC='\033[0m'
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}🔥 LLM-SR GRPO 直连模式训练 (6卡)${NC}"
+echo -e "${BLUE}🔥 LLM-SR GRPO 直连模式训练 (8卡)${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # 检查必要文件 - 参照HTTP模式
@@ -64,7 +64,7 @@ echo -e "  训练轮数: ${YELLOW}$EPOCHS${NC}"
 echo -e "  批次大小: ${YELLOW}$BATCH_SIZE${NC}"
 echo -e "  学习率: ${YELLOW}$LEARNING_RATE${NC}"
 echo -e "  组大小: ${YELLOW}$ROLLOUT_N${NC}"
-echo -e "  GPU: ${YELLOW}0,1,2,3,4,5 (6张卡)${NC}"
+echo -e "  GPU: ${YELLOW}0,1,2,3,4,5,6,7 (8张卡)${NC}"
 echo -e "  输出目录: ${YELLOW}$OUTPUT_DIR${NC}"
 echo -e "  训练模式: ${YELLOW}🔥 直连模式 - 真正微调权重${NC}"
 
@@ -79,7 +79,7 @@ if [[ "$CONDA_DEFAULT_ENV" != "verl" ]]; then
 fi
 
 # 检查训练 GPU 可用性
-echo -e "${BLUE}🎮 检查训练 GPU 状态 (6卡)...${NC}"
+echo -e "${BLUE}🎮 检查训练 GPU 状态 (8卡)...${NC}"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits
 
 # 🔥 设置环境变量进行优化
@@ -144,7 +144,7 @@ if ps -p $GRPO_PID > /dev/null 2>&1; then
     echo -e "${BLUE}📊 进程状态:${NC}"
     echo -e "  🔧 PID: $GRPO_PID"
     echo -e "  📋 日志: ${LOG_FILE}"
-    echo -e "  🎮 GPU: 0,1,2,3,4,5"
+    echo -e "  🎮 GPU: 0,1,2,3,4,5,6,7"
     echo -e "  ⚡ 模式: 直连模式 - 真正微调权重"
     echo -e "  ⏰ 预计训练时间: ${EPOCHS} 轮次"
     
