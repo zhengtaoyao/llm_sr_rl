@@ -260,7 +260,7 @@ def _extract_math_expr(code: str) -> str:
     if not code or not isinstance(code, str):
         return ""
     code = code.strip()
-    lines = code.split("\n")
+    lines = code.split("\\n")
     assigns = {{}}
     ret_var = None
     for line in lines:
@@ -396,7 +396,7 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
                     "data_path": "{data_path}",
                 }}
                 with open(jsonl_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\\n")
     except Exception:
         pass
 
@@ -459,12 +459,20 @@ def create_grpo_config_direct(
     config = {
         # 算法配置
         "algorithm": {
+            "_target_": "verl.trainer.config.AlgoConfig",
             "adv_estimator": "grpo",
             "gamma": 1.0,
             "lam": 1.0,
             "norm_adv_by_std_in_grpo": True,
             "use_kl_in_reward": False,
+            "kl_penalty": "kl",
+            "use_pf_ppo": False,
+            "pf_ppo": {
+                "reweight_method": "pow",
+                "weight_pow": 2.0
+            },
             "kl_ctrl": {
+                "_target_": "verl.trainer.config.KLControlConfig",
                 "type": "fixed",
                 "kl_coef": 0.001,
                 "horizon": 10000,
@@ -474,16 +482,43 @@ def create_grpo_config_direct(
         
         # 数据配置
         "data": {
+            "tokenizer": None,
+            "use_shm": False,
             "train_files": [dataset_path],
             "val_files": [dataset_path],
-            "train_batch_size": prompt_bsz,  # 🔥 使用计算得出的训练批量
-            "val_batch_size": prompt_mini_bsz,  # 🔥 验证用小批量
+            "prompt_key": "prompt",
+            "reward_fn_key": "data_source",
             "max_prompt_length": kwargs.get('max_prompt_length', 2048),
             "max_response_length": kwargs.get('max_response_length', 2048),
+            "train_batch_size": prompt_bsz,  # 🔥 使用计算得出的训练批量
+            "val_batch_size": prompt_mini_bsz,  # 🔥 验证用小批量
+            "return_raw_input_ids": False,
+            "return_raw_chat": False,
+            "return_full_prompt": False,
+            "shuffle": True,
+            "dataloader_num_workers": 8,
+            "validation_shuffle": False,
             "filter_overlong_prompts": True,
+            "filter_overlong_prompts_workers": 1,
             "truncation": "error",
-            "reward_fn_key": "data_source",
-            "shuffle": True
+            "image_key": "images",
+            "video_key": "videos",
+            "trust_remote_code": False,
+            "custom_cls": {
+                "path": None,
+                "name": None
+            },
+            "return_multi_modal_inputs": True,
+            # 🔧 避免 Missing key data.sampler
+            "sampler": {
+                "class_path": None,
+                "class_name": None
+            },
+            "datagen": {
+                "path": None,
+                "name": None
+            },
+            "apply_chat_template_kwargs": {}
         },
         
         # 🔥 直连模式 Actor 配置 - 真正加载模型权重
@@ -496,11 +531,18 @@ def create_grpo_config_direct(
                 "model_dtype": "bf16"
             },
             "actor": {
+                "_target_": "verl.workers.config.FSDPActorConfig",  # 🔧 添加必需的 _target_
                 "strategy": "fsdp",  # 🔥 使用 FSDP 进行分布式训练
                 "optim": {
+                    "_target_": "verl.workers.config.FSDPOptimizerConfig",  # 🔧 添加必需的 _target_
                     "lr": kwargs.get('learning_rate', 1e-6),
-                    "eps": 1e-8,
-                    "weight_decay": 0.01
+                    "weight_decay": 0.01,
+                    "lr_warmup_steps_ratio": 0.0,
+                    "total_training_steps": -1,
+                    "lr_warmup_steps": -1,
+                    "min_lr_ratio": 0.0,
+                    "num_cycles": 0.5,
+                    "warmup_style": "constant"
                 },
                 # 🔥 CRITICAL: 修复批量大小配置
                 "ppo_mini_batch_size": prompt_mini_bsz,  # 96
@@ -510,10 +552,10 @@ def create_grpo_config_direct(
                 "kl_loss_coef": 0.001,
                 "kl_loss_type": "low_var_kl",
                 "entropy_coeff": 0.0,
-                "entropy_from_logits_with_chunking": False,
                 "clip_ratio": 0.2,
                 "clip_ratio_low": 0.2,
                 "clip_ratio_high": 0.2,
+                "clip_ratio_c": 3.0,
 
                 "ppo_epochs": 1,
                 "loss_agg_mode": "token-mean",
@@ -527,25 +569,68 @@ def create_grpo_config_direct(
                 "use_fused_kernels": False,
                 "use_torch_compile": False,
                 "entropy_checkpointing": False,
+                "entropy_from_logits_with_chunking": False,
                 "grad_clip": 1.0,
                 "shuffle": False,
-                "data_loader_seed": None,
                 # 🔥 添加policy_loss配置
                 "policy_loss": {
-                    "loss_mode": "vanilla"
+                    "_target_": "verl.workers.config.PolicyLossConfig",
+                    "loss_mode": "vanilla",
+                    "clip_cov_ratio": 0.0002,
+                    "clip_cov_lb": 1.0,
+                    "clip_cov_ub": 5.0,
+                    "kl_cov_ratio": 0.0002,
+                    "ppo_kl_coef": 0.1
                 },
                 "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus,
                     "param_offload": True,
                     "optimizer_offload": True,
                     "forward_prefetch": False,  # 🔥 禁用前向预取以节省内存
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
                     "wrap_policy": {
                         "min_num_params": 0  # 🔥 更小的包装策略
                     }
                 },
                 "checkpoint": {
+                    "_target_": "verl.trainer.config.CheckpointConfig",
                     "save_contents": ["model", "optimizer", "extra"],
-                    "load_contents": ["model", "optimizer", "extra"]
+                    "load_contents": ["model", "optimizer", "extra"],
+                    "async_save": False
+                },
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        },
+                        "torch": {
+                            "_target_": "verl.utils.profiler.config.TorchProfilerToolConfig",
+                            "step_start": -1,
+                            "step_end": -1
+                        },
+                        "torch_memory": {
+                            "_target_": "verl.utils.profiler.config.TorchMemoryToolConfig",
+                            "trace_alloc_max_entries": 100000,
+                            "stack_depth": 32
+                        },
+                        "npu": {
+                            "_target_": "verl.utils.profiler.config.NPUToolConfig",
+                            "contents": [],
+                            "level": "level1",
+                            "analysis": False,
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
                 }
             },
             "rollout": {
@@ -632,19 +717,98 @@ def create_grpo_config_direct(
         
         # 🔥 CRITICAL: Critic 配置也需要正确的微批量大小
         "critic": {
+            "_target_": "verl.workers.config.FSDPCriticConfig",  # 🔧 添加必需的 _target_
+            "enable": True,  # 🔧 修复 Missing key critic.enable
             "strategy": "fsdp",
+            "rollout_n": rollout_n,
             "ppo_mini_batch_size": prompt_mini_bsz,  # 48
             "ppo_micro_batch_size": None,  # 废弃字段
             "ppo_micro_batch_size_per_gpu": micro_batch_size_per_gpu,  # 1 (必须>0)
             "use_dynamic_bsz": True,
-            "fsdp_config": {
-                "fsdp_size": gpus,
-                "param_offload": True,
-                "optimizer_offload": True,
-                "forward_prefetch": False,
-                "wrap_policy": {
-                    "min_num_params": 0
+            "forward_micro_batch_size": None,
+            "forward_micro_batch_size_per_gpu": micro_batch_size_per_gpu,
+            "ulysses_sequence_parallel_size": 1,
+            "grad_clip": 1.0,
+            "optim": {
+                "_target_": "verl.workers.config.FSDPOptimizerConfig",
+                "lr": kwargs.get('learning_rate', 1e-6),
+                "weight_decay": 0.01,
+                "lr_warmup_steps_ratio": 0.0,
+                "total_training_steps": -1,
+                "lr_warmup_steps": -1,
+                "min_lr_ratio": None,
+                "warmup_style": "constant"
+            },
+            "model": {
+                "_target_": "verl.workers.config.FSDPCriticModelCfg",
+                "path": model_path,
+                "tokenizer_path": model_path,
+                "override_config": {},
+                "external_lib": None,
+                "trust_remote_code": False,
+                "use_shm": False,
+                "enable_gradient_checkpointing": True,
+                "enable_activation_offload": False,
+                "use_remove_padding": True,
+                "lora_rank": 0,
+                "lora_alpha": 16,
+                "target_modules": "all-linear",
+                "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
+                    "param_offload": True,
+                    "optimizer_offload": True,
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
+                    "wrap_policy": {
+                        "min_num_params": 0
+                    },
+                    "fsdp_size": gpus,
+                    "forward_prefetch": False
                 }
+            },
+            "ppo_epochs": 1,
+            "shuffle": False,
+            "cliprange_value": 0.5,
+            "loss_agg_mode": "token-mean",
+            "ppo_max_token_len_per_gpu": safe_max_token_len,
+            "forward_max_token_len_per_gpu": safe_max_token_len,
+            "checkpoint": {
+                "_target_": "verl.trainer.config.CheckpointConfig",
+                "save_contents": ["model", "optimizer", "extra"],
+                "load_contents": ["model", "optimizer", "extra"],
+                "async_save": False
+            },
+            "profiler": {
+                "_target_": "verl.utils.profiler.ProfilerConfig",
+                "tool": None,
+                "enable": False,
+                "all_ranks": False,
+                "ranks": [],
+                "save_path": None,
+                "tool_config": {
+                    "nsys": {
+                        "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                        "discrete": False
+                    },
+                    "torch": {
+                        "_target_": "verl.utils.profiler.config.TorchProfilerToolConfig",
+                        "step_start": -1,
+                        "step_end": -1
+                    },
+                    "torch_memory": {
+                        "_target_": "verl.utils.profiler.config.TorchMemoryToolConfig",
+                        "trace_alloc_max_entries": 100000,
+                        "stack_depth": 32
+                    },
+                    "npu": {
+                        "_target_": "verl.utils.profiler.config.NPUToolConfig",
+                        "contents": [],
+                        "level": "level1",
+                        "analysis": False,
+                        "discrete": False
+                    }
+                },
+                "global_tool_config": None
             }
         },
         
@@ -684,7 +848,7 @@ def create_grpo_config_direct(
             "log_val_generations": kwargs.get('log_val_generations', 10),  # 验证时记录的生成样本数
             "log_train_generations": kwargs.get('log_train_generations', 5),  # 训练时记录的生成样本数
             "profile_steps": None,
-            "balance_batch": None,
+            "balance_batch": True,  # 🔥 FIX: 修改为 True
             "critic_warmup": 0, # 🔥 FIX: Add missing critic_warmup key
 
             # 训练器用于对齐/重排的最大 token 长度，同步提升到安全阈值
@@ -692,8 +856,37 @@ def create_grpo_config_direct(
         },
         
         # Ray 初始化
-        "ray_init": {
-            "num_cpus": None
+        "ray_kwargs": {
+            "ray_init": {
+                "num_cpus": None,
+                "runtime_env": {
+                    "env_vars": {
+                        "PYTHONPATH": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR"
+                    }
+                }
+            }
+        },
+        
+        # 全局性能分析器配置
+        "global_profiler": {
+            "_target_": "verl.utils.profiler.ProfilerConfig",
+            "tool": None,
+            "steps": None,
+            "profile_continuous_steps": False,
+            "save_path": "outputs/profile",
+            "global_tool_config": {
+                "nsys": {
+                    "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                    "discrete": False
+                },
+                "torch_memory": {
+                    "trace_alloc_max_entries": 100000,
+                    "stack_depth": 32,
+                    "context": "all",
+                    "stacks": "all",
+                    "kw_args": {}
+                }
+            }
         }
     }
     
@@ -754,12 +947,20 @@ def create_grpo_config_http(
     config = {
         # 算法配置
         "algorithm": {
+            "_target_": "verl.trainer.config.AlgoConfig",
             "adv_estimator": "grpo",
             "gamma": 1.0,
             "lam": 1.0,
             "norm_adv_by_std_in_grpo": True,
             "use_kl_in_reward": False,
+            "kl_penalty": "kl",
+            "use_pf_ppo": False,
+            "pf_ppo": {
+                "reweight_method": "pow",
+                "weight_pow": 2.0
+            },
             "kl_ctrl": {
+                "_target_": "verl.trainer.config.KLControlConfig",
                 "type": "fixed",
                 "kl_coef": 0.001,
                 "horizon": 10000,
@@ -769,16 +970,43 @@ def create_grpo_config_http(
         
         # 数据配置
         "data": {
+            "tokenizer": None,
+            "use_shm": False,
             "train_files": [dataset_path],
             "val_files": [dataset_path],
-            "train_batch_size": prompt_bsz,  # 64
-            "val_batch_size": prompt_mini_bsz,  # 32
+            "prompt_key": "prompt",
+            "reward_fn_key": "data_source",
             "max_prompt_length": kwargs.get('max_prompt_length', 1024),
             "max_response_length": kwargs.get('max_response_length', 512),
+            "train_batch_size": prompt_bsz,  # 64
+            "val_batch_size": prompt_mini_bsz,  # 32
+            "return_raw_input_ids": False,
+            "return_raw_chat": False,
+            "return_full_prompt": False,
+            "shuffle": True,
+            "dataloader_num_workers": 8,
+            "validation_shuffle": False,
             "filter_overlong_prompts": True,
+            "filter_overlong_prompts_workers": 1,
             "truncation": "error",
-            "reward_fn_key": "data_source",
-            "shuffle": True
+            "image_key": "images",
+            "video_key": "videos",
+            "trust_remote_code": False,
+            "custom_cls": {
+                "path": None,
+                "name": None
+            },
+            "return_multi_modal_inputs": True,
+            # 🔧 避免 Missing key data.sampler
+            "sampler": {
+                "class_path": None,
+                "class_name": None
+            },
+            "datagen": {
+                "path": None,
+                "name": None
+            },
+            "apply_chat_template_kwargs": {}
         },
         
         # 🔥 HTTP 模式 Actor 配置 - 只加载 tokenizer，不更新权重
@@ -902,11 +1130,35 @@ def create_grpo_config_http(
         
         # Critic 配置
         "critic": {
+            "enable": True,  # 🔧 修复 Missing key critic.enable
             "strategy": "fsdp",
             "ppo_mini_batch_size": prompt_mini_bsz,  # 32
             "ppo_micro_batch_size": None,  # 废弃字段
             "ppo_micro_batch_size_per_gpu": micro_batch_size_per_gpu,  # 2
-            "use_dynamic_bsz": True
+            "use_dynamic_bsz": True,
+            "optim": {
+                "lr": kwargs.get('learning_rate', 1e-6),
+                "weight_decay": 0.01,
+                "lr_warmup_steps_ratio": 0.0,
+                "total_training_steps": -1,
+                "lr_warmup_steps": -1
+            },
+            "model": {
+                "path": tokenizer_path,
+                "tokenizer_path": tokenizer_path,
+                "override_config": {},
+                "external_lib": None,
+                "trust_remote_code": False
+            },
+            "ppo_epochs": 1,
+            "shuffle": False,
+            "cliprange_value": 0.5,
+            "loss_agg_mode": "token-mean",
+            "checkpoint": {
+                "save_contents": [],
+                "load_contents": [],
+                "async_save": False
+            }
         },
         
         # 奖励模型配置
@@ -936,14 +1188,47 @@ def create_grpo_config_http(
             "default_local_dir": output_dir,
             "device": "cuda",
             "critic_warmup": 0, # 🔥 FIX: Add missing critic_warmup key
+            "balance_batch": True,  # 🔥 FIX: 添加缺失字段
+            "log_val_generations": 10,
+            "log_train_generations": 5,
+            "profile_steps": None,
             "default_hdfs_dir": None,
 
             "resume_mode": "disable"
         },
         
         # Ray 初始化
-        "ray_init": {
-            "num_cpus": None
+        "ray_kwargs": {
+            "ray_init": {
+                "num_cpus": None,
+                "runtime_env": {
+                    "env_vars": {
+                        "PYTHONPATH": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR"
+                    }
+                }
+            }
+        },
+        
+        # 全局性能分析器配置
+        "global_profiler": {
+            "_target_": "verl.utils.profiler.ProfilerConfig",
+            "tool": None,
+            "steps": None,
+            "profile_continuous_steps": False,
+            "save_path": "outputs/profile",
+            "global_tool_config": {
+                "nsys": {
+                    "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                    "discrete": False
+                },
+                "torch_memory": {
+                    "trace_alloc_max_entries": 100000,
+                    "stack_depth": 32,
+                    "context": "all",
+                    "stacks": "all",
+                    "kw_args": {}
+                }
+            }
         }
     }
     

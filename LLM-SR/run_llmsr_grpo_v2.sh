@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 基于 SLURM 的 v2 训练脚本（使用 srun 按用户规范提交作业）
+# v2 训练脚本（nohup 后台执行）
 
-PARTITION=${PARTITION:-a6000_xgpan}
-JOB_NAME=${JOB_NAME:-llmsr_grpo_v2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 GPUS=${GPUS:-1}
-SRUN_EXTRAS=${SRUN_EXTRAS:-}
 
 PROBLEM_NAME=${PROBLEM_NAME:-"oscillator1"}
 SPEC_PATH=${SPEC_PATH:-"./specs/specification_${PROBLEM_NAME}_numpy.txt"}
@@ -30,6 +28,8 @@ LOG_FILE="${LOG_DIR}/grpo_v2_${PROBLEM_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
 # 将输出目录导出，便于奖励函数写入 sample.jsonl
 export LLMSR_OUTPUT_DIR="${OUT_DIR}"
+# 设置 PYTHONPATH 确保能找到 verl 模块
+export PYTHONPATH="/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR:$PYTHONPATH"
 
 CMD="python main.py \
   --use_rl_v2 \
@@ -49,8 +49,21 @@ CMD="python main.py \
   $( [[ "$GRID_TRAIN" == "1" ]] && echo "--grid_train_data --num_grid_groups ${NUM_GROUPS}" ) \
   --log_path ${LOG_FILE}"
 
-echo "[SRUN] ${CMD}" | tee -a "$LOG_FILE"
+echo "[NOHUP] ${CMD}"
 
-srun -p ${PARTITION} -n 1 --gres=gpu:${GPUS} --job-name=${JOB_NAME} --kill-on-bad-exit=1 ${SRUN_EXTRAS} bash -lc "${CMD} |& cat" |& tee -a "$LOG_FILE"
+nohup bash -lc "${CMD}" >> "$LOG_FILE" 2>&1 &
+GRPO_PID=$!
+
+echo "✅ GRPO v2 训练已启动 (PID: $GRPO_PID)"
+echo "📋 日志文件: ${LOG_FILE}"
+echo "💡 监控命令: tail -f ${LOG_FILE}"
+
+sleep 5
+if ps -p $GRPO_PID > /dev/null 2>&1; then
+  echo "✅ 训练进程存活"
+else
+  echo "❌ 训练进程未存活，请查看日志: ${LOG_FILE}"
+  exit 1
+fi
 
 

@@ -182,3 +182,34 @@
   - 维持微批 1，必要时下调 `max_model_len` 与 `max_new_tokens`；确保 `bf16`、FSDP offload 打开。
 
 
+- v2 用的 LLM
+  - 文件位置:
+    - /storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/run_llmsr_grpo_v2.sh（变量 MODEL_PATH）
+    - /storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr/rl/grpo_runner_v2.py（配置里 actor_rollout_ref.model.path）
+  - 默认值: 由 run_llmsr_grpo_v2.sh 的 MODEL_PATH 决定（当前为 Qwen/Qwen2.5-Coder-7B-Instruct 路径）。
+  - 修改方式:
+    - 最简单: 调用前覆写环境变量 MODEL_PATH=... bash run_llmsr_grpo_v2.sh
+    - 或直接改脚本 run_llmsr_grpo_v2.sh 里的 MODEL_PATH
+    - 代码层: grpo_runner_v2.py 里传入的 model_path 会写到 config["actor_rollout_ref"]["model"]["path"]
+
+- v1 用的 LLM（直连模式）
+  - 文件位置:
+    - /storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/run_llmsr_grpo_direct.sh（变量 MODEL_PATH）
+    - /storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr/rl/grpo_runner.py（配置里 actor_rollout_ref.model.path；train_llmsr_grpo_direct 的 model_path 参数默认 Qwen/Qwen2.5-1.5B-Instruct）
+  - 默认值: 以 run_llmsr_grpo_direct.sh 的 MODEL_PATH 为准（脚本里指定的 Qwen 7B Coder）；若未传，grpo_runner.py 的函数默认是 Qwen/Qwen2.5-1.5B-Instruct。
+  - 修改方式:
+    - 覆写环境变量 MODEL_PATH=... bash run_llmsr_grpo_direct.sh 或直接改脚本里的 MODEL_PATH
+    - 代码层: grpo_runner.py 里传入的 model_path 会写到 config["actor_rollout_ref"]["model"]["path"]
+
+- v1 的 HTTP 模式（仅当 --use_http）
+  - 文件位置:
+    - /storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr/rl/grpo_runner.py（create_grpo_config_http）
+  - 相关字段:
+    - tokenizer（仅分词器）: config["actor_rollout_ref"]["model"]["path"] ← tokenizer_path
+    - 外部服务: rollout.http_url（指向你的推理服务）
+  - 修改方式:
+    - 在 main.py 调用时传 --use_http 并设置 --tokenizer_path 与 --http_url，或在 grpo_runner.py 的 create_grpo_config_http 参数处改
+
+简要提示
+- 推荐用“改脚本变量 MODEL_PATH 或运行时覆写 MODEL_PATH”的方式切换模型；这会透传到 config 的 actor_rollout_ref.model.path。
+- 两套（v1/v2）都是读取 HuggingFace 名称或本地权重目录路径作为 model_path。

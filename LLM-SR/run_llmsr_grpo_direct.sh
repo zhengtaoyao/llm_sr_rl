@@ -6,14 +6,14 @@
 
 set -e
 
-# 🔧 GPU 配置：直连模式使用所有 8 张 GPU 进行训练
-# 直连模式不需要单独的LLM服务GPU，Actor进程直接加载模型
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export GPUS=8
+# 🔧 GPU 配置（不使用 srun，保持本机 CUDA 可见设备）
+# 直连模式不需要单独的LLM服务GPU，Actor 进程直接加载模型
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export GPUS=${GPUS:-8}
 
 # 🎯 训练配置 - 参照HTTP模式但使用直连
 PROBLEM_NAME=${PROBLEM_NAME:-"oscillator1"}
-MODEL_PATH="/storage/home/westlakeLab/zhangjunlei/Qwen/Qwen2.5-Coder-7B-Instruct"
+MODEL_PATH="/storage/home/westlakeLab/zhangjunlei/Qwen3-8B"
 EPOCHS=${EPOCHS:-10}
 BATCH_SIZE=${BATCH_SIZE:-24}       # 24 * 6 = 144, 适合6卡训练
 LEARNING_RATE=${LEARNING_RATE:-1e-6}
@@ -23,9 +23,15 @@ MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-2}  # 减少微批量大小
 # 📁 路径配置 - 完全参照HTTP模式
 SPEC_PATH="./specs/specification_${PROBLEM_NAME}_numpy.txt"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="./llmsr_grpo_outputs/${PROBLEM_NAME}_qwen7b_direct_${TIMESTAMP}"
+OUTPUT_DIR="./llmsr_grpo_outputs/${PROBLEM_NAME}_qwen8b_direct_${TIMESTAMP}"
 LOG_DIR="./llmsr_logs"
-LOG_FILE="${LOG_DIR}/grpo_direct_${PROBLEM_NAME}_qwen7b_${TIMESTAMP}.log"
+# 若同名文件已存在且不是目录，则使用备用目录
+if [[ -e "$LOG_DIR" && ! -d "$LOG_DIR" ]]; then
+  ALT_DIR="./llmsr_logs_dir"
+  echo -e "${YELLOW}⚠️  检测到 ${LOG_DIR} 不是目录，切换到 ${ALT_DIR}${NC}"
+  LOG_DIR="$ALT_DIR"
+fi
+LOG_FILE="${LOG_DIR}/grpo_direct_${PROBLEM_NAME}_qwen8b_${TIMESTAMP}.log"
 
 # 将输出目录导出，便于奖励函数写入 sample.jsonl
 export LLMSR_OUTPUT_DIR="${OUTPUT_DIR}"
@@ -53,21 +59,25 @@ if [[ ! -f "./data/${PROBLEM_NAME}/train.csv" ]]; then
     exit 1
 fi
 
-# 创建输出目录
-mkdir -p "$OUTPUT_DIR"
-mkdir -p "$LOG_DIR"
+# 创建输出目录（兼容极简系统，避免已存在时的提示）
+if [[ ! -d "$OUTPUT_DIR" ]]; then
+  mkdir -p "$OUTPUT_DIR" 2>/dev/null || true
+fi
+if [[ ! -d "$LOG_DIR" ]]; then
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+fi
 
 # 显示配置信息 - 参照HTTP模式
-echo -e "${PURPLE}🔥 训练配置 (6卡全参数微调):${NC}"
+echo -e "${PURPLE}🔥 训练配置 (直连):${NC}"
 echo -e "${GREEN}📋 配置信息:${NC}"
 echo -e "  问题: ${YELLOW}$PROBLEM_NAME${NC}"
-echo -e "  模型: ${YELLOW}Qwen2.5-Coder-7B-Instruct (直连)${NC}"
+echo -e "  模型: ${YELLOW}Qwen3-8B (直连)${NC}"
 echo -e "  模型路径: ${YELLOW}$MODEL_PATH${NC}"
 echo -e "  训练轮数: ${YELLOW}$EPOCHS${NC}"
 echo -e "  批次大小: ${YELLOW}$BATCH_SIZE${NC}"
 echo -e "  学习率: ${YELLOW}$LEARNING_RATE${NC}"
 echo -e "  组大小: ${YELLOW}$ROLLOUT_N${NC}"
-echo -e "  GPU: ${YELLOW}0,1,2,3,4,5,6,7 (8张卡)${NC}"
+echo -e "  GPU: ${YELLOW}${CUDA_VISIBLE_DEVICES} (${GPUS} 张卡)${NC}"
 echo -e "  输出目录: ${YELLOW}$OUTPUT_DIR${NC}"
 echo -e "  训练模式: ${YELLOW}🔥 直连模式 - 真正微调权重${NC}"
 
@@ -81,9 +91,15 @@ if [[ "$CONDA_DEFAULT_ENV" != "verl" ]]; then
     }
 fi
 
+echo -e "${GREEN}✅ 环境变量设置完成${NC}"
+
 # 检查训练 GPU 可用性
-echo -e "${BLUE}🎮 检查训练 GPU 状态 (8卡)...${NC}"
-nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits
+echo -e "${BLUE}🎮 检查训练 GPU 状态 (${GPUS}卡)...${NC}"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader,nounits || true
+else
+  echo -e "${YELLOW}⚠️  未找到 nvidia-smi，跳过GPU状态检查${NC}"
+fi
 
 # 🔥 设置环境变量进行优化
 export TOKENIZERS_PARALLELISM=true
@@ -91,9 +107,11 @@ export NCCL_DEBUG=INFO
 export VLLM_LOGGING_LEVEL=WARN
 # 🔥 修复 vLLM 内存池兼容性问题：移除 expandable_segments 配置
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:256,garbage_collection_threshold:0.6"
+# 🔥 设置 PYTHONPATH 确保能找到 verl 模块
+export PYTHONPATH="/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR:$PYTHONPATH"
 
 # NCCL 优化配置 - 参照HTTP模式
-NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1 2>/dev/null || true)
 export NCCL_SOCKET_IFNAME=$NETWORK_INTERFACE
 export NCCL_IB_DISABLE=1
 export NCCL_P2P_DISABLE=1
@@ -106,18 +124,11 @@ export NCCL_TREE_THRESHOLD=0
 export MASTER_ADDR=localhost
 export MASTER_PORT=29500
 
-echo -e "${GREEN}✅ 环境变量设置完成${NC}"
-
-
-
-# 🚀 启动 GRPO 直连模式训练 - 参照HTTP模式调用main.py
-echo -e "${BLUE}🚀 启动 GRPO 直连训练 (后台运行)...${NC}"
+# 以 nohup 后台运行
+echo -e "${BLUE}🚀 启动 GRPO 直连训练 (nohup 后台)...${NC}"
 echo -e "${YELLOW}日志文件: ${LOG_FILE}${NC}"
-echo -e "${GREEN}✅ 使用直连模式 - 真正微调权重${NC}"
-echo -e "${GREEN}✅ 不依赖HTTP服务，直接加载模型${NC}"
-
-# 🔥 使用和HTTP模式相同的main.py调用，但不使用--use_http
-nohup python main.py \
+CMD=(
+  python main.py \
     --use_rl \
     --problem_name "$PROBLEM_NAME" \
     --spec_path "$SPEC_PATH" \
@@ -128,57 +139,22 @@ nohup python main.py \
     --rollout_n "$ROLLOUT_N" \
     --gpus "$GPUS" \
     --output_dir "$OUTPUT_DIR" \
-    --log_path "$LOG_FILE" \
-    > "${LOG_FILE}" 2>&1 &
+    --log_path "$LOG_FILE"
+)
 
+echo -e "${BLUE}[NOHUP] ${CMD[*]}${NC}"
+nohup "${CMD[@]}" >> "$LOG_FILE" 2>&1 &
 GRPO_PID=$!
+
 echo -e "${GREEN}✅ GRPO 直连训练已启动 (PID: $GRPO_PID)${NC}"
 echo -e "${YELLOW}📋 日志文件: ${LOG_FILE}${NC}"
 echo -e "${YELLOW}💡 监控命令: tail -f ${LOG_FILE}${NC}"
-echo -e "${YELLOW}🛑 停止命令: kill $GRPO_PID${NC}"
 
-# 等待训练启动
-echo -e "${BLUE}⏳ 等待训练启动...${NC}"
-sleep 10
-
-# 检查进程状态
+echo -e "${BLUE}⏳ 等待 8 秒后检查进程...${NC}"
+sleep 8
 if ps -p $GRPO_PID > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ GRPO 直连训练正常运行中${NC}"
-    echo -e "${BLUE}📊 进程状态:${NC}"
-    echo -e "  🔧 PID: $GRPO_PID"
-    echo -e "  📋 日志: ${LOG_FILE}"
-    echo -e "  🎮 GPU: 0,1,2,3,4,5,6,7"
-    echo -e "  ⚡ 模式: 直连模式 - 真正微调权重"
-    echo -e "  ⏰ 预计训练时间: ${EPOCHS} 轮次"
-    
-    # 等待训练完成
-    wait $GRPO_PID
-    TRAIN_STATUS=$?
-    
-    if [[ $TRAIN_STATUS -eq 0 ]]; then
-        echo ""
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}✅ GRPO 直连训练完成！${NC}"
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${YELLOW}📁 结果保存到: $OUTPUT_DIR${NC}"
-        echo -e "${YELLOW}📋 日志文件: ${LOG_FILE}${NC}"
-        echo -e "${GREEN}🔥 权重已真正更新！${NC}"
-        
-        # 显示最终GPU使用情况
-        echo -e "${BLUE}📊 最终GPU状态:${NC}"
-        nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader,nounits
-        
-    else
-        echo ""
-        echo -e "${RED}========================================${NC}"
-        echo -e "${RED}❌ 直连训练失败！${NC}"
-        echo -e "${RED}========================================${NC}"
-        echo -e "${YELLOW}📋 检查日志: ${LOG_FILE}${NC}"
-        exit 1
-    fi
-    
+  echo -e "${GREEN}✅ 训练进程存活 (PID: $GRPO_PID)${NC}"
 else
-    echo -e "${RED}❌ GRPO 直连训练启动失败${NC}"
-    echo -e "${YELLOW}📋 检查日志: ${LOG_FILE}${NC}"
-    exit 1
-fi 
+  echo -e "${RED}❌ 训练进程未存活，请查看日志: ${LOG_FILE}${NC}"
+  exit 1
+fi

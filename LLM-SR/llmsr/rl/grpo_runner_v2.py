@@ -259,24 +259,64 @@ def create_grpo_config_v2(
 
     cfg = {
         "algorithm": {
+            "_target_": "verl.trainer.config.AlgoConfig",
             "adv_estimator": "grpo",
             "gamma": 1.0,
             "lam": 1.0,
             "norm_adv_by_std_in_grpo": True,
             "use_kl_in_reward": False,
-            "kl_ctrl": {"type": "fixed", "kl_coef": float(kl_coef), "horizon": 10000, "target_kl": 0.1},
+            "kl_penalty": "kl",
+            "use_pf_ppo": False,
+            "pf_ppo": {
+                "reweight_method": "pow",
+                "weight_pow": 2.0
+            },
+            "kl_ctrl": {
+                "_target_": "verl.trainer.config.KLControlConfig",
+                "type": "fixed", 
+                "kl_coef": float(kl_coef), 
+                "horizon": 10000, 
+                "target_kl": 0.1
+            },
         },
         "data": {
+            "tokenizer": None,
+            "use_shm": False,
             "train_files": [dataset_path],
             "val_files": [dataset_path],
-            "train_batch_size": prompt_bsz,
-            "val_batch_size": prompt_mini_bsz,
+            "prompt_key": "prompt",
+            "reward_fn_key": "data_source",
             "max_prompt_length": max_prompt_length,
             "max_response_length": max_new_tokens,
-            "filter_overlong_prompts": True,
-            "truncation": "error",
-            "reward_fn_key": "data_source",
+            "train_batch_size": prompt_bsz,
+            "val_batch_size": prompt_mini_bsz,
+            "return_raw_input_ids": False,
+            "return_raw_chat": False,
+            "return_full_prompt": False,
             "shuffle": True,
+            "dataloader_num_workers": 8,
+            "validation_shuffle": False,
+            "filter_overlong_prompts": True,
+            "filter_overlong_prompts_workers": 1,
+            "truncation": "error",
+            "image_key": "images",
+            "video_key": "videos",
+            "trust_remote_code": False,
+            "custom_cls": {
+                "path": None,
+                "name": None
+            },
+            "return_multi_modal_inputs": True,
+            # 🔧 避免 Missing key data.sampler
+            "sampler": {
+                "class_path": None,
+                "class_name": None
+            },
+            "datagen": {
+                "path": None,
+                "name": None
+            },
+            "apply_chat_template_kwargs": {}
         },
         "actor_rollout_ref": {
             "model": {
@@ -287,8 +327,19 @@ def create_grpo_config_v2(
                 "model_dtype": "bf16",
             },
             "actor": {
+                "_target_": "verl.workers.config.FSDPActorConfig",
                 "strategy": "fsdp",
-                "optim": {"lr": learning_rate, "eps": 1e-8, "weight_decay": 0.01},
+                "optim": {
+                    "_target_": "verl.workers.config.FSDPOptimizerConfig",
+                    "lr": learning_rate, 
+                    "weight_decay": 0.01,
+                    "lr_warmup_steps_ratio": 0.0,
+                    "total_training_steps": -1,
+                    "lr_warmup_steps": -1,
+                    "min_lr_ratio": 0.0,
+                    "num_cycles": 0.5,
+                    "warmup_style": "constant"
+                },
                 "ppo_mini_batch_size": prompt_mini_bsz,
                 "ppo_micro_batch_size": None,
                 "ppo_micro_batch_size_per_gpu": micro_bsz_per_gpu,
@@ -299,6 +350,7 @@ def create_grpo_config_v2(
                 "clip_ratio": 0.2,
                 "clip_ratio_low": 0.2,
                 "clip_ratio_high": 0.2,
+                "clip_ratio_c": 3.0,
                 "ppo_epochs": 1,
                 "loss_agg_mode": "token-mean",  # 处理长度偏置
                 "use_dynamic_bsz": True,
@@ -310,16 +362,63 @@ def create_grpo_config_v2(
                 "entropy_checkpointing": False,
                 "grad_clip": 1.0,
                 "shuffle": False,
-                "data_loader_seed": None,
-                "policy_loss": {"loss_mode": "vanilla"},
+                "policy_loss": {
+                    "_target_": "verl.workers.config.PolicyLossConfig",
+                    "loss_mode": "vanilla",
+                    "clip_cov_ratio": 0.0002,
+                    "clip_cov_lb": 1.0,
+                    "clip_cov_ub": 5.0,
+                    "kl_cov_ratio": 0.0002,
+                    "ppo_kl_coef": 0.1
+                },
                 "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus,
                     "param_offload": True,
                     "optimizer_offload": True,
                     "forward_prefetch": False,
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
                     "wrap_policy": {"min_num_params": 0},
                 },
-                "checkpoint": {"save_contents": ["model", "optimizer", "extra"], "load_contents": ["model", "optimizer", "extra"]},
+                "checkpoint": {
+                    "_target_": "verl.trainer.config.CheckpointConfig",
+                    "save_contents": ["model", "optimizer", "extra"], 
+                    "load_contents": ["model", "optimizer", "extra"],
+                    "async_save": False
+                },
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        },
+                        "torch": {
+                            "_target_": "verl.utils.profiler.config.TorchProfilerToolConfig",
+                            "step_start": -1,
+                            "step_end": -1
+                        },
+                        "torch_memory": {
+                            "_target_": "verl.utils.profiler.config.TorchMemoryToolConfig",
+                            "trace_alloc_max_entries": 100000,
+                            "stack_depth": 32
+                        },
+                        "npu": {
+                            "_target_": "verl.utils.profiler.config.NPUToolConfig",
+                            "contents": [],
+                            "level": "level1",
+                            "analysis": False,
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
             },
             "rollout": {
                 "name": "vllm",
@@ -370,12 +469,98 @@ def create_grpo_config_v2(
             "hybrid_engine": True,
         },
         "critic": {
+            "_target_": "verl.workers.config.FSDPCriticConfig",
+            "enable": True,  # 🔧 修复 Missing key critic.enable
             "strategy": "fsdp",
+            "rollout_n": rollout_n,
             "ppo_mini_batch_size": prompt_mini_bsz,
             "ppo_micro_batch_size": None,
             "ppo_micro_batch_size_per_gpu": micro_bsz_per_gpu,
             "use_dynamic_bsz": True,
-            "fsdp_config": {"fsdp_size": gpus, "param_offload": True, "optimizer_offload": True, "forward_prefetch": False, "wrap_policy": {"min_num_params": 0}},
+            "forward_micro_batch_size": None,
+            "forward_micro_batch_size_per_gpu": micro_bsz_per_gpu,
+            "ulysses_sequence_parallel_size": 1,
+            "grad_clip": 1.0,
+            "optim": {
+                "_target_": "verl.workers.config.FSDPOptimizerConfig",
+                "lr": learning_rate,
+                "weight_decay": 0.01,
+                "lr_warmup_steps_ratio": 0.0,
+                "total_training_steps": -1,
+                "lr_warmup_steps": -1,
+                "min_lr_ratio": None,
+                "warmup_style": "constant"
+            },
+            "model": {
+                "_target_": "verl.workers.config.FSDPCriticModelCfg",
+                "path": model_path,
+                "tokenizer_path": model_path,
+                "override_config": {},
+                "external_lib": None,
+                "trust_remote_code": False,
+                "use_shm": False,
+                "enable_gradient_checkpointing": True,
+                "enable_activation_offload": False,
+                "use_remove_padding": True,
+                "lora_rank": 0,
+                "lora_alpha": 16,
+                "target_modules": "all-linear",
+                "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
+                    "param_offload": True,
+                    "optimizer_offload": True,
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
+                    "wrap_policy": {"min_num_params": 0},
+                    "fsdp_size": gpus,
+                    "forward_prefetch": False
+                }
+            },
+            "ppo_epochs": 1,
+            "shuffle": False,
+            "cliprange_value": 0.5,
+            "loss_agg_mode": "token-mean",
+            "ppo_max_token_len_per_gpu": safe_max_token_len,
+            "forward_max_token_len_per_gpu": safe_max_token_len,
+            "checkpoint": {
+                "_target_": "verl.trainer.config.CheckpointConfig",
+                "save_contents": ["model", "optimizer", "extra"],
+                "load_contents": ["model", "optimizer", "extra"],
+                "async_save": False
+            },
+            "profiler": {
+                "_target_": "verl.utils.profiler.ProfilerConfig",
+                "tool": None,
+                "enable": False,
+                "all_ranks": False,
+                "ranks": [],
+                "save_path": None,
+                "tool_config": {
+                    "nsys": {
+                        "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                        "discrete": False
+                    },
+                    "torch": {
+                        "_target_": "verl.utils.profiler.config.TorchProfilerToolConfig",
+                        "step_start": -1,
+                        "step_end": -1
+                    },
+                    "torch_memory": {
+                        "_target_": "verl.utils.profiler.config.TorchMemoryToolConfig",
+                        "trace_alloc_max_entries": 100000,
+                        "stack_depth": 32
+                    },
+                    "npu": {
+                        "_target_": "verl.utils.profiler.config.NPUToolConfig",
+                        "contents": [],
+                        "level": "level1",
+                        "analysis": False,
+                        "discrete": False
+                    }
+                },
+                "global_tool_config": None
+            },
+
         },
         "reward_model": {"enable": False, "launch_reward_fn_async": False},
         "custom_reward_function": {"path": reward_file_path, "name": "compute_score"},
@@ -394,9 +579,43 @@ def create_grpo_config_v2(
             "device": "cuda",
             "resume_mode": "disable",
             "critic_warmup": 0,
+            "balance_batch": True,
+            "log_val_generations": 10,
+            "log_train_generations": 5,
+            "profile_steps": None,
+            "default_hdfs_dir": None,
             "log_prob_max_token_len_per_gpu": safe_max_token_len,
         },
-        "ray_init": {"num_cpus": None},
+        "ray_kwargs": {
+            "ray_init": {
+                "num_cpus": None,
+                "runtime_env": {
+                    "env_vars": {
+                        "PYTHONPATH": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR"
+                    }
+                }
+            }
+        },
+        "global_profiler": {
+            "_target_": "verl.utils.profiler.ProfilerConfig",
+            "tool": None,
+            "steps": None,
+            "profile_continuous_steps": False,
+            "save_path": "outputs/profile",
+            "global_tool_config": {
+                "nsys": {
+                    "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                    "discrete": False
+                },
+                "torch_memory": {
+                    "trace_alloc_max_entries": 100000,
+                    "stack_depth": 32,
+                    "context": "all",
+                    "stacks": "all",
+                    "kw_args": {}
+                }
+            }
+        },
     }
     return OmegaConf.create(cfg)
 
