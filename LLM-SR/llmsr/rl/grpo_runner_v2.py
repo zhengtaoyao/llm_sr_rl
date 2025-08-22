@@ -321,10 +321,20 @@ def create_grpo_config_v2(
         "actor_rollout_ref": {
             "model": {
                 "path": model_path,
-                "tokenizer_only": False,
                 "use_remove_padding": True,
                 "enable_gradient_checkpointing": True,
-                "model_dtype": "bf16",
+                "use_fused_kernels": False,
+                "trust_remote_code": False,
+                "custom_chat_template": None,
+                "external_lib": None,
+                "override_config": {},
+                "enable_activation_offload": False,
+                "lora_rank": 0,
+                "lora_alpha": 16,
+                "target_modules": "all-linear",
+                "exclude_modules": None,
+                "use_liger": False,
+                "fused_kernel_options": {}
             },
             "actor": {
                 "_target_": "verl.workers.config.FSDPActorConfig",
@@ -421,36 +431,129 @@ def create_grpo_config_v2(
                 },
             },
             "rollout": {
+                "_target_": "verl.workers.config.RolloutConfig",
                 "name": "vllm",
                 "mode": "sync",
                 "n": rollout_n,
-                "max_new_tokens": max_new_tokens,
-                "load_format": "auto",
-                "dtype": "bfloat16",
-                "prompt_length": max_prompt_length,
-                "response_length": max_new_tokens,
-                "max_model_len": max_model_len,
-                "enforce_eager": True,
-                "enable_prefix_caching": False,
-                "disable_log_stats": False,
-                "enable_chunked_prefill": False,
-                "disable_custom_all_reduce": True,
-                "gpu_memory_utilization": 0.6,
-                "max_num_batched_tokens": 4096,
-                "seed": 0,
-                "log_prob_use_dynamic_bsz": True,
-                "ulysses_sequence_parallel_size": 1,
-                "tensor_model_parallel_size": 1,
                 "temperature": 0.8,
                 "top_p": 0.9,
                 "top_k": 30,
+                "do_sample": True,
+                "over_sample_rate": 0,
+                "prompt_length": max_prompt_length,
+                "response_length": max_new_tokens,
+                "dtype": "bfloat16",
+                "gpu_memory_utilization": 0.6,
+                "ignore_eos": False,
+                "enforce_eager": True,
+                "cudagraph_capture_sizes": None,
+                "free_cache_engine": True,
+                "tensor_model_parallel_size": 1,
+                "max_num_batched_tokens": 4096,
+                "max_model_len": max_model_len,
+                "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
-                "log_prob_max_token_len_per_gpu": safe_max_token_len,
                 "log_prob_micro_batch_size_per_gpu": micro_bsz_per_gpu,
-                "val_kwargs": {"do_sample": True, "temperature": 0.8, "top_p": 0.9, "top_k": 30, "max_new_tokens": max_new_tokens, "n": 1},
+                "log_prob_use_dynamic_bsz": True,
+                "log_prob_max_token_len_per_gpu": safe_max_token_len,
+                "disable_log_stats": False,
+                "multi_stage_wake_up": False,
+                "engine_kwargs": {
+                    "vllm": {},
+                    "sglang": {}
+                },
+                "calculate_log_probs": False,
+                "agent": {
+                    "_target_": "verl.workers.config.AgentLoopConfig",
+                    "num_workers": 8,
+                    "agent_loop_config_path": None,
+                    "custom_async_server": {
+                        "_target_": "verl.workers.config.CustomAsyncServerConfig",
+                        "path": None,
+                        "name": None
+                    }
+                },
+                "trace": {
+                    "_target_": "verl.workers.config.TraceConfig",
+                    "backend": None,
+                    "token2text": False
+                },
+                "update_weights_bucket_megabytes": 512,
+                "skip_rollout": False,
+                "skip_dump_dir": "/tmp/rollout_dump",
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
+                "enable_chunked_prefill": False,
+                "load_format": "auto",
+                "layered_summon": False,
+                "layer_name_map": {},
+                "val_kwargs": {
+                    "_target_": "verl.workers.config.SamplingConfig",
+                    "do_sample": True, 
+                    "temperature": 0.8, 
+                    "top_p": 0.9, 
+                    "top_k": 30, 
+                    "n": 1
+                },
                 "calculate_log_probs": False,
                 "free_cache_engine": True,
-                "multi_turn": {"enable": False, "max_turns": None, "tool_config_path": None, "completion_callback": None, "use_inference_chat_template": False, "enable_tokenization_sanity_check": True, "format": "hermes"},
+                "ignore_eos": False,
+                "over_sample_rate": 0,
+                "multi_stage_wake_up": False,
+                "engine_kwargs": {
+                    "vllm": {},
+                    "sglang": {}
+                },
+                "update_weights_bucket_megabytes": 512,
+                "trace": {
+                    "_target_": "verl.workers.config.TraceConfig",
+                    "backend": None,
+                    "token2text": False
+                },
+                "skip_rollout": False,
+                "skip_dump_dir": "/tmp/rollout_dump",
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
+                "multi_turn": {
+                    "_target_": "verl.workers.config.MultiTurnConfig",
+                    "enable": False, 
+                    "max_assistant_turns": None, 
+                    "tool_config_path": None, 
+                    "max_user_turns": None,
+                    "max_parallel_calls": 1,
+                    "max_tool_response_length": 256,
+                    "tool_response_truncate_side": "middle",
+                    "interaction_config_path": None,
+                    "use_inference_chat_template": False, 
+                    "tokenization_sanity_check_mode": "strict", 
+                    "format": "hermes"
+                },
             },
             "ref": {
                 "log_prob_micro_batch_size": None,
@@ -464,7 +567,16 @@ def create_grpo_config_v2(
                 "use_torch_compile": False,
                 "entropy_checkpointing": False,
                 "grad_clip": 1.0,
-                "fsdp_config": {"fsdp_size": gpus, "param_offload": True, "forward_prefetch": False, "wrap_policy": {"min_num_params": 0}},
+                "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
+                    "fsdp_size": gpus, 
+                    "param_offload": True, 
+                    "optimizer_offload": True,
+                    "forward_prefetch": False, 
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
+                    "wrap_policy": {"min_num_params": 0}
+                },
             },
             "hybrid_engine": True,
         },

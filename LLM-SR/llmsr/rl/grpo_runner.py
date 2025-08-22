@@ -525,10 +525,20 @@ def create_grpo_config_direct(
         "actor_rollout_ref": {
             "model": {
                 "path": model_path,
-                "tokenizer_only": False,  # 🔥 关键：加载完整模型，不只是tokenizer
                 "use_remove_padding": True,
                 "enable_gradient_checkpointing": True,
-                "model_dtype": "bf16"
+                "use_fused_kernels": False,
+                "trust_remote_code": False,
+                "custom_chat_template": None,
+                "external_lib": None,
+                "override_config": {},
+                "enable_activation_offload": False,
+                "lora_rank": 0,
+                "lora_alpha": 16,
+                "target_modules": "all-linear",
+                "exclude_modules": None,
+                "use_liger": False,
+                "fused_kernel_options": {}
             },
             "actor": {
                 "_target_": "verl.workers.config.FSDPActorConfig",  # 🔧 添加必需的 _target_
@@ -634,55 +644,129 @@ def create_grpo_config_direct(
                 }
             },
             "rollout": {
+                "_target_": "verl.workers.config.RolloutConfig",
                 "name": "vllm",
                 "mode": "sync",  # 🔥 CRITICAL: 必需字段
                 "n": rollout_n,  # 4
-                "max_new_tokens": kwargs.get('max_new_tokens', 4096),  # 🔥 增大生成长度
-                "load_format": "auto",
-                "dtype": "bfloat16",
-                "prompt_length": kwargs.get('max_prompt_length', 2048),
-                "response_length": kwargs.get('max_new_tokens', 4096),
-                "max_model_len": kwargs.get('max_model_len', 8192),
-                "enforce_eager": True,
-                "enable_prefix_caching": False,
-                "disable_log_stats": False,
-                "enable_chunked_prefill": False,
-                "disable_custom_all_reduce": True,
-                "gpu_memory_utilization": 0.6,
-                "max_num_batched_tokens": 4096,  # 🔥 提升批量 token 数
-                "seed": 0,
-                "log_prob_use_dynamic_bsz": True,
-                "ulysses_sequence_parallel_size": 1,  # 与 actor 保持一致
-
-                "tensor_model_parallel_size": 1,
                 "temperature": kwargs.get('temperature', 0.8),
                 "top_p": kwargs.get('top_p', 0.9),
                 "top_k": kwargs.get('top_k', 30),
+                "do_sample": True,
+                "over_sample_rate": 0,
+                "prompt_length": kwargs.get('max_prompt_length', 2048),
+                "response_length": kwargs.get('max_new_tokens', 4096),
+                "dtype": "bfloat16",
+                "gpu_memory_utilization": 0.6,
+                "ignore_eos": False,
+                "enforce_eager": True,
+                "cudagraph_capture_sizes": None,
+                "free_cache_engine": True,
+                "tensor_model_parallel_size": 1,
+                "max_num_batched_tokens": 4096,  # 🔥 提升批量 token 数
+                "max_model_len": kwargs.get('max_model_len', 8192),
+                "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
-                # 🔥 CRITICAL: ref模型也需要正确的微批量大小
-
-                # 解耦 log_prob 最大 token 长度，与 rollout 的 max_model_len 独立
-                "log_prob_max_token_len_per_gpu": kwargs.get('log_prob_max_token_len_per_gpu', safe_max_token_len),
                 "log_prob_micro_batch_size_per_gpu": micro_batch_size_per_gpu,  # 1
+                "log_prob_use_dynamic_bsz": True,
+                "log_prob_max_token_len_per_gpu": kwargs.get('log_prob_max_token_len_per_gpu', safe_max_token_len),
+                "disable_log_stats": False,
+                "multi_stage_wake_up": False,
+                "engine_kwargs": {
+                    "vllm": {},
+                    "sglang": {}
+                },
+                "calculate_log_probs": False,
+                "agent": {
+                    "_target_": "verl.workers.config.AgentLoopConfig",
+                    "num_workers": 8,
+                    "agent_loop_config_path": None,
+                    "custom_async_server": {
+                        "_target_": "verl.workers.config.CustomAsyncServerConfig",
+                        "path": None,
+                        "name": None
+                    }
+                },
+                "trace": {
+                    "_target_": "verl.workers.config.TraceConfig",
+                    "backend": None,
+                    "token2text": False
+                },
+                "update_weights_bucket_megabytes": 512,
+                "skip_rollout": False,
+                "skip_dump_dir": "/tmp/rollout_dump",
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
+                "enable_chunked_prefill": False,
+                "load_format": "auto",
+                "layered_summon": False,
+                "layer_name_map": {},
                 "val_kwargs": {
+                    "_target_": "verl.workers.config.SamplingConfig",
                     "do_sample": True,
                     "temperature": kwargs.get('temperature', 0.8),
                     "top_p": kwargs.get('top_p', 0.9),
                     "top_k": kwargs.get('top_k', 30),
-                    "max_new_tokens": kwargs.get('max_new_tokens', 4096),
                     "n": 1  # 🔥 CRITICAL: 添加缺失的验证时采样数量
                 },
                 # 🔥 CRITICAL: 添加缺失的rollout字段 (直连模式)
                 "calculate_log_probs": False,  # 用于调试的rollout概率记录
                 "free_cache_engine": True,  # 生成后释放KV缓存引擎
+                "ignore_eos": False,
+                "over_sample_rate": 0,
+                "multi_stage_wake_up": False,
+                "engine_kwargs": {
+                    "vllm": {},
+                    "sglang": {}
+                },
+                "update_weights_bucket_megabytes": 512,
+                "trace": {
+                    "_target_": "verl.workers.config.TraceConfig",
+                    "backend": None,
+                    "token2text": False
+                },
+                "skip_rollout": False,
+                "skip_dump_dir": "/tmp/rollout_dump",
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
                 # 🔥 CRITICAL: 必需的 multi_turn 配置
                 "multi_turn": {
+                    "_target_": "verl.workers.config.MultiTurnConfig",
                     "enable": False,
-                    "max_turns": None,
+                    "max_assistant_turns": None,
                     "tool_config_path": None,
-                    "completion_callback": None,
+                    "max_user_turns": None,
+                    "max_parallel_calls": 1,
+                    "max_tool_response_length": 256,
+                    "tool_response_truncate_side": "middle",
+                    "interaction_config_path": None,
                     "use_inference_chat_template": False,
-                    "enable_tokenization_sanity_check": True,
+                    "tokenization_sanity_check_mode": "strict",
                     "format": "hermes"
                 }
             },
@@ -704,9 +788,13 @@ def create_grpo_config_direct(
                 "entropy_checkpointing": False,
                 "grad_clip": 1.0,  # 梯度裁剪，即使ref不优化也需要
                 "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus,
                     "param_offload": True,
+                    "optimizer_offload": True,
                     "forward_prefetch": False,  # 🔥 禁用前向预取以节省内存
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
                     "wrap_policy": {
                         "min_num_params": 0
                     }
@@ -1013,7 +1101,20 @@ def create_grpo_config_http(
         "actor_rollout_ref": {
             "model": {
                 "path": tokenizer_path,
-                "tokenizer_only": True  # 🔥 关键：只加载tokenizer，不加载模型权重
+                "use_remove_padding": False,
+                "enable_gradient_checkpointing": False,
+                "use_fused_kernels": False,
+                "trust_remote_code": False,
+                "custom_chat_template": None,
+                "external_lib": None,
+                "override_config": {},
+                "enable_activation_offload": False,
+                "lora_rank": 0,
+                "lora_alpha": 16,
+                "target_modules": "all-linear",
+                "exclude_modules": None,
+                "use_liger": False,
+                "fused_kernel_options": {}
             },
             "actor": {
                 "strategy": "fsdp",
@@ -1035,10 +1136,13 @@ def create_grpo_config_http(
                 "use_dynamic_bsz": True,
                 "ulysses_sequence_parallel_size": 1,  # 禁用序列并行
                 "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus,
                     "param_offload": True,
                     "optimizer_offload": True,
                     "forward_prefetch": False,
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
                     "wrap_policy": {
                         "min_num_params": 0
                     }
@@ -1049,42 +1153,79 @@ def create_grpo_config_http(
                 }
             },
             "rollout": {
+                "_target_": "verl.workers.config.RolloutConfig",
                 "name": "vllm",
                 "mode": "sync",  # 🔥 CRITICAL: 同步模式，必需字段
-                "http_url": http_url,
                 "n": rollout_n,  # 4
-                "max_new_tokens": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
-                "load_format": "auto",
-                "dtype": "bfloat16",
-                "log_prob_use_dynamic_bsz": True,
-
-                "prompt_length": kwargs.get('max_prompt_length', 1024),
-                "response_length": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
-                "max_model_len": kwargs.get('max_model_len', 2048),  # 🔥 减小到2048以匹配max_num_batched_tokens
-                "enforce_eager": True,
-                "free_cache_engine": False,
-                "enable_prefix_caching": False,
-                "disable_log_stats": False,
-                "enable_chunked_prefill": False,
-                "disable_custom_all_reduce": True,
-                "gpu_memory_utilization": 0.60,
-                "max_num_batched_tokens": 8192,
-                "seed": 0,
-                "tensor_model_parallel_size": 1,
                 "temperature": kwargs.get('temperature', 0.8),
                 "top_p": kwargs.get('top_p', 0.9),
                 "top_k": kwargs.get('top_k', 30),
-                "timeout": kwargs.get('timeout', 60),
-                "repeat_prompt": 1,
+                "do_sample": True,
+                "over_sample_rate": 0,
+                "prompt_length": kwargs.get('max_prompt_length', 1024),
+                "response_length": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
+                "dtype": "bfloat16",
+                "gpu_memory_utilization": 0.60,
+                "ignore_eos": False,
+                "enforce_eager": True,
+                "cudagraph_capture_sizes": None,
+                "free_cache_engine": False,
+                "tensor_model_parallel_size": 1,
+                "max_num_batched_tokens": 8192,
+                "max_model_len": kwargs.get('max_model_len', 2048),  # 🔥 减小到2048以匹配max_num_batched_tokens
+                "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
                 "log_prob_micro_batch_size_per_gpu": micro_batch_size_per_gpu,  # 2
+                "log_prob_use_dynamic_bsz": True,
                 "log_prob_max_token_len_per_gpu": kwargs.get('max_model_len', 24000),
-                # 🔥 CRITICAL: 添加缺失的验证配置
-
+                "disable_log_stats": False,
+                "multi_stage_wake_up": False,
+                "engine_kwargs": {
+                    "vllm": {},
+                    "sglang": {}
+                },
+                "calculate_log_probs": False,
+                "agent": {
+                    "_target_": "verl.workers.config.AgentLoopConfig",
+                    "num_workers": 8,
+                    "agent_loop_config_path": None,
+                    "custom_async_server": {
+                        "_target_": "verl.workers.config.CustomAsyncServerConfig",
+                        "path": None,
+                        "name": None
+                    }
+                },
+                "trace": {
+                    "_target_": "verl.workers.config.TraceConfig",
+                    "backend": None,
+                    "token2text": False
+                },
+                "update_weights_bucket_megabytes": 512,
+                "skip_rollout": False,
+                "skip_dump_dir": "/tmp/rollout_dump",
+                "profiler": {
+                    "_target_": "verl.utils.profiler.ProfilerConfig",
+                    "tool": None,
+                    "enable": False,
+                    "all_ranks": False,
+                    "ranks": [],
+                    "save_path": None,
+                    "tool_config": {
+                        "nsys": {
+                            "_target_": "verl.utils.profiler.config.NsightToolConfig",
+                            "discrete": False
+                        }
+                    },
+                    "global_tool_config": None
+                },
+                "enable_chunked_prefill": False,
+                "load_format": "auto",
+                "layered_summon": False,
+                "layer_name_map": {},
                 "val_kwargs": {
+                    "_target_": "verl.workers.config.SamplingConfig",
                     "do_sample": True,
                     "n": rollout_n,
-                    "max_new_tokens": kwargs.get('max_new_tokens', 2048),  # 🔥 增加到原来4倍
                     "temperature": kwargs.get('temperature', 0.8),
                     "top_p": kwargs.get('top_p', 0.9),
                     "top_k": kwargs.get('top_k', 30)
@@ -1094,12 +1235,17 @@ def create_grpo_config_http(
                 "free_cache_engine": True,  # 生成后释放KV缓存引擎
                 # 🔥 CRITICAL: 添加缺失的 multi_turn 配置
                 "multi_turn": {
+                    "_target_": "verl.workers.config.MultiTurnConfig",
                     "enable": False,
-                    "max_turns": None,
+                    "max_assistant_turns": None,
                     "tool_config_path": None,
-                    "completion_callback": None,
+                    "max_user_turns": None,
+                    "max_parallel_calls": 1,
+                    "max_tool_response_length": 256,
+                    "tool_response_truncate_side": "middle",
+                    "interaction_config_path": None,
                     "use_inference_chat_template": False,
-                    "enable_tokenization_sanity_check": True,
+                    "tokenization_sanity_check_mode": "strict",
                     "format": "hermes"
                 }
             },
@@ -1117,9 +1263,13 @@ def create_grpo_config_http(
                 "entropy_checkpointing": False,
                 "grad_clip": 1.0,
                 "fsdp_config": {
+                    "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus,
                     "param_offload": True,
+                    "optimizer_offload": True,
                     "forward_prefetch": False,
+                    "offload_policy": False,
+                    "reshard_after_forward": True,
                     "wrap_policy": {
                         "min_num_params": 0
                     }
