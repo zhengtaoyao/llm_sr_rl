@@ -449,7 +449,44 @@ def train_llmsr_grpo_v2(
     # 4) 训练
     cfg_path = os.path.join(output_dir, "grpo_config_v2.yaml")
     OmegaConf.save(config, cfg_path)
+    # 让奖励函数能写入样本文件
+    os.environ["LLMSR_OUTPUT_DIR"] = output_dir
     run_ppo(config)
+
+    # 5) 训练结束后，从 sample.jsonl 中选出最优
+    try:
+        import json
+        best_reward = None
+        best_mse = None
+        best_reward_rec = None
+        best_mse_rec = None
+        jsonl_path = os.path.join(output_dir, "sample.jsonl")
+        if os.path.exists(jsonl_path):
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    r = rec.get("reward")
+                    m = rec.get("nmse")
+                    if isinstance(r, (int, float)) and (best_reward is None or r > best_reward):
+                        best_reward = r
+                        best_reward_rec = rec
+                    if isinstance(m, (int, float)) and (best_mse is None or m < best_mse):
+                        best_mse = m
+                        best_mse_rec = rec
+        if best_reward_rec:
+            with open(os.path.join(output_dir, "best_reward.json"), "w", encoding="utf-8") as f:
+                json.dump(best_reward_rec, f, ensure_ascii=False, indent=2)
+        if best_mse_rec:
+            with open(os.path.join(output_dir, "best_mse.json"), "w", encoding="utf-8") as f:
+                json.dump(best_mse_rec, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 

@@ -28,6 +28,9 @@ LOG_DIR=${LOG_DIR:-"./llmsr_logs"}
 mkdir -p "$LOG_DIR" "$OUT_DIR"
 LOG_FILE="${LOG_DIR}/grpo_v2_${PROBLEM_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
+# 将输出目录导出，便于奖励函数写入 sample.jsonl
+export LLMSR_OUTPUT_DIR="${OUT_DIR}"
+
 CMD="python main.py \
   --use_rl_v2 \
   --problem_name ${PROBLEM_NAME} \

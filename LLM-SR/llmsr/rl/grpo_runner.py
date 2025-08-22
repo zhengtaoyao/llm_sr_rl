@@ -237,11 +237,88 @@ Avoids KeyError: 'ground_truth' problem
 
 import sys
 import os
+import json, time, re
 from pathlib import Path
 
 # Import simplified reward function
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from simple_verl_reward import compute_score as simple_compute_score
+
+# 输出目录（由 runner 注入）
+OUTPUT_DIR = r"{output_dir}"
+
+def _valid_expr(expr: str) -> bool:
+    if not expr:
+        return False
+    invalid = [r'print\s*\(', r'import\s+', r'def\s+', r'class\s+', r'if\s+', r'for\s+', r'while\s+']
+    if any(re.search(p, expr) for p in invalid):
+        return False
+    has = [r'[a-zA-Z_][a-zA-Z0-9_]*', r'-?[0-9]*\.?[0-9]+', r'[\+\-\*/\(\)]', r'(sin|cos|tan|exp|log|sqrt|abs|tanh)\(']
+    return any(re.search(p, expr) for p in has)
+
+def _extract_math_expr(code: str) -> str:
+    if not code or not isinstance(code, str):
+        return ""
+    code = code.strip()
+    lines = code.split("\n")
+    assigns = {{}}
+    ret_var = None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        if s.startswith('return '):
+            val = s[len('return '):].strip()
+            if val.isidentifier():
+                ret_var = val
+            else:
+                if _valid_expr(val):
+                    return val
+        elif '=' in s and not s.startswith('def'):
+            left, right = s.split('=', 1)
+            left = left.strip(); right = right.strip()
+            if left.isidentifier() and _valid_expr(right):
+                assigns[left] = right
+    if ret_var and ret_var in assigns:
+        return assigns[ret_var]
+    if assigns:
+        for k in ["result","output","y","a","value"]:
+            if k in assigns:
+                return assigns[k]
+        return list(assigns.values())[-1]
+    for line in lines:
+        s = line.strip()
+        if _valid_expr(s):
+            return s
+    return ""
+
+def _compute_nmse(expr: str, data_path: str) -> float | None:
+    try:
+        import numpy as np, pandas as pd
+        df = pd.read_csv(data_path)
+        data = df.values
+        X = data[:256, :-1]; y = data[:256, -1].reshape(-1)
+        var_names = df.columns[:-1].tolist()
+        safe = {{"sin": np.sin, "cos": np.cos, "tan": np.tan, "exp": np.exp, "log": np.log, "sqrt": np.sqrt, "abs": np.abs, "tanh": np.tanh, "pi": np.pi, "e": np.e, "np": np, "__builtins__": {{}}}}
+        for i, vn in enumerate(var_names):
+            if i < X.shape[1]:
+                safe[vn] = X[:, i]
+        cleaned = expr.replace('^','**').replace(' ','')
+        pred = eval(cleaned, safe)
+        import numpy as np
+        pred = np.asarray(pred, dtype=np.float64)
+        if pred.ndim==0:
+            pred = np.full_like(y, float(pred), dtype=np.float64)
+        if pred.shape[0] != y.shape[0]:
+            pred = np.full_like(y, float(pred[0]) if pred.size>0 else 0.0, dtype=np.float64)
+        mse = float(np.mean((pred - y) ** 2))
+        var = float(np.var(y) + 1e-9)
+        nmse = mse/var
+        if not np.isfinite(nmse) or nmse < 0:
+            return None
+        return float(min(10.0, nmse))
+    except Exception:
+        return None
 
 def compute_score(data_sources=None, solution_strs=None, ground_truths=None, extra_infos=None, grid_train_data={grid_train_data}, **kwargs):
     """
@@ -295,7 +372,35 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
                 extra_infos[i]['problem_type'] = problem_type
     
     # Call simplified reward function with grid_train_data parameter
-    return simple_compute_score(data_sources, solution_strs, ground_truths, extra_infos, grid_train_data={grid_train_data}, **kwargs)
+    rewards = simple_compute_score(data_sources, solution_strs, ground_truths, extra_infos, grid_train_data={grid_train_data}, **kwargs)
+
+    # 统一为列表
+    if isinstance(rewards, (int, float)):
+        rewards = [float(rewards)]
+
+    # 记录到 sample.jsonl
+    try:
+        out_dir = OUTPUT_DIR or os.environ.get("LLMSR_OUTPUT_DIR")
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            jsonl_path = os.path.join(out_dir, "sample.jsonl")
+            for code, r in zip(solution_strs, rewards):
+                expr = _extract_math_expr(code)
+                nmse = _compute_nmse(expr, "{data_path}") if expr else None
+                rec = {{
+                    "timestamp": time.time(),
+                    "expr": expr,
+                    "raw": code,
+                    "reward": float(r) if r is not None else None,
+                    "nmse": nmse,
+                    "data_path": "{data_path}",
+                }}
+                with open(jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    return rewards if len(rewards) > 1 else (rewards[0] if rewards else -1.0)
 '''
     
     output_path = os.path.join(output_dir, "llmsr_reward.py")
@@ -961,6 +1066,8 @@ def train_llmsr_grpo_direct(
     except Exception as e:
         print(f"⚠️ W&B 初始化失败: {e}")
     try:
+        # 将输出目录传递给奖励写样本
+        os.environ["LLMSR_OUTPUT_DIR"] = output_dir
         run_ppo(config)
         print("✅ Direct mode training complete, weights updated!")
     except Exception as e:
@@ -973,6 +1080,41 @@ def train_llmsr_grpo_direct(
                 print("✅ W&B 已结束记录")
         except Exception:
             pass
+
+    # 训练结束后输出最优样本
+    try:
+        import json
+        best_reward = None
+        best_mse = None
+        best_reward_rec = None
+        best_mse_rec = None
+        jsonl_path = os.path.join(output_dir, "sample.jsonl")
+        if os.path.exists(jsonl_path):
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    r = rec.get("reward")
+                    m = rec.get("nmse")
+                    if isinstance(r, (int, float)) and (best_reward is None or r > best_reward):
+                        best_reward = r
+                        best_reward_rec = rec
+                    if isinstance(m, (int, float)) and (best_mse is None or m < best_mse):
+                        best_mse = m
+                        best_mse_rec = rec
+        if best_reward_rec:
+            with open(os.path.join(output_dir, "best_reward.json"), "w", encoding="utf-8") as f:
+                json.dump(best_reward_rec, f, ensure_ascii=False, indent=2)
+        if best_mse_rec:
+            with open(os.path.join(output_dir, "best_mse.json"), "w", encoding="utf-8") as f:
+                json.dump(best_mse_rec, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def train_llmsr_grpo(

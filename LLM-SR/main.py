@@ -88,6 +88,8 @@ if __name__ == '__main__':
         template_path = args.spec_path
         data_path = f'./data/{args.problem_name}/train.csv'
         output_dir = args.output_dir or f'./llmsr_grpo_outputs/{args.problem_name}'
+        # 传递输出目录给奖励函数
+        os.environ["LLMSR_OUTPUT_DIR"] = output_dir
         
         # Check if files exist
         if not os.path.exists(template_path):

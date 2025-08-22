@@ -18,6 +18,7 @@ import math
 import re
 from typing import Any, Dict, List, Tuple
 import numpy as np
+import os, json, time
 
 
 def compute_score(
@@ -52,11 +53,40 @@ def compute_score(
         return [float(-1.0)] * len(solution_strs)
 
     # 计算各项 reward
+    out_dir = os.environ.get("LLMSR_OUTPUT_DIR")
+    jsonl_path = None
+    if out_dir:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            jsonl_path = os.path.join(out_dir, "sample.jsonl")
+        except Exception:
+            jsonl_path = None
+
     rewards: List[float] = []
     for i, code in enumerate(solution_strs):
         expr = _extract_math_expr(code)
         if not expr:
             rewards.append(-1.0)
+            # 记录失败样本
+            if jsonl_path:
+                try:
+                    rec = {
+                        "timestamp": time.time(),
+                        "expr": None,
+                        "raw": code,
+                        "reward": -1.0,
+                        "nmse": None,
+                        "complexity": None,
+                        "r_fit": None,
+                        "r_simp": None,
+                        "r_phys": None,
+                        "r_proc": None,
+                        "data_path": data_path,
+                    }
+                    with open(jsonl_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
             continue
 
         nmse = _compute_nmse(expr, inputs, outputs, var_names)
@@ -73,6 +103,27 @@ def compute_score(
 
         reward = w_fit * r_fit + w_simp * r_simp + w_phys * r_phys + w_proc * r_proc
         rewards.append(float(reward))
+
+        # 记录样本
+        if jsonl_path:
+            try:
+                rec = {
+                    "timestamp": time.time(),
+                    "expr": expr,
+                    "raw": code,
+                    "reward": float(reward),
+                    "nmse": float(nmse),
+                    "complexity": float(complexity),
+                    "r_fit": float(r_fit),
+                    "r_simp": float(r_simp),
+                    "r_phys": float(r_phys),
+                    "r_proc": float(r_proc),
+                    "data_path": data_path,
+                }
+                with open(jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
 
     # 组内排名归一（若 VERL 批次来自同一提示组，可降低尺度噪声）
     if groupwise_rank_norm and len(rewards) >= 2:

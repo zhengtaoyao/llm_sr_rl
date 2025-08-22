@@ -27,6 +27,9 @@ OUTPUT_DIR="./llmsr_grpo_outputs/${PROBLEM_NAME}_qwen7b_direct_${TIMESTAMP}"
 LOG_DIR="./llmsr_logs"
 LOG_FILE="${LOG_DIR}/grpo_direct_${PROBLEM_NAME}_qwen7b_${TIMESTAMP}.log"
 
+# 将输出目录导出，便于奖励函数写入 sample.jsonl
+export LLMSR_OUTPUT_DIR="${OUTPUT_DIR}"
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
