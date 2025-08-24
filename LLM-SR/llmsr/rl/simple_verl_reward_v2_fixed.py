@@ -18,13 +18,6 @@ import numpy as np
 import os, json, time
 import ast
 import pandas as pd
-import warnings
-
-# 🔥 数值保护：抑制数值计算警告，避免日志污染
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid value encountered')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='overflow encountered')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='divide by zero encountered')
-np.seterr(all='ignore')  # 忽略numpy的数值错误警告
 from pathlib import Path
 
 
@@ -60,7 +53,7 @@ def compute_score(
     if len(solution_strs) == 0:
         return []
 
-    # 加载数据（最多 256 个样本，提升速度）
+    # 加载数据（使用全部样本）
     inputs, outputs, var_names = _load_training_data_from_path(data_path)
     if inputs is None:
         # 返回惩罚
@@ -314,9 +307,6 @@ def evaluate_function(inputs, outputs, var_names):
     try:
         def loss_function(params):
             try:
-                # 🔥 数值保护：限制参数范围，防止溢出
-                params = np.clip(params, -100, 100)
-                
                 # 🔥 按照无RL版本的方式，直接传递整个数组
                 if len(var_names) == 2:  # x, v (oscillator)
                     x_data = inputs[:, 0]
@@ -340,63 +330,28 @@ def evaluate_function(inputs, outputs, var_names):
                 # 确保predictions是numpy数组
                 predictions = np.asarray(predictions, dtype=np.float64)
                 
-                # 🔥 数值保护：检查预测值是否有效
-                if not np.all(np.isfinite(predictions)):
-                    return 1e6
-                
-                # 🔥 数值保护：限制预测值范围，防止极端值
-                predictions = np.clip(predictions, -1e6, 1e6)
-                
                 # 处理标量返回值
                 if predictions.ndim == 0:
                     predictions = np.full_like(outputs, float(predictions))
                 
                 # 计算MSE
                 mse = np.mean((predictions - outputs) ** 2)
+                return float(mse) if np.isfinite(mse) else 1e6
                 
-                # 🔥 数值保护：确保MSE有效且不会太大
-                if not np.isfinite(mse) or mse > 1e10:
-                    return 1e6
-                    
-                return float(mse)
-                
-            except (RuntimeWarning, FloatingPointError, OverflowError, ZeroDivisionError):
-                return 1e6
             except Exception as e:
                 return 1e6
         
         # 🔥 BFGS参数优化（模仿无RL版本）
         initial_params = np.ones(10)
+        result = minimize(loss_function, initial_params, method='BFGS')
         
-        # 🔥 数值保护：添加参数边界约束
-        from scipy.optimize import Bounds
-        bounds = Bounds(-100, 100)  # 限制参数在[-100, 100]范围内
+        # 获取优化后的参数和损失
+        optimized_params = result.x
+        optimized_loss = result.fun
         
-        # 🔥 数值保护：设置优化选项，增加数值稳定性
-        options = {
-            'maxiter': 100,  # 限制最大迭代次数
-            'ftol': 1e-6,    # 函数容差
-            'gtol': 1e-6     # 梯度容差
-        }
-        
-        try:
-            # 使用L-BFGS-B方法，支持边界约束
-            result = minimize(loss_function, initial_params, method='L-BFGS-B', 
-                            bounds=bounds, options=options)
-            
-            # 获取优化后的参数和损失
-            optimized_params = result.x
-            optimized_loss = result.fun
-            
-            # 处理优化失败的情况
-            if (np.isnan(optimized_loss) or np.isinf(optimized_loss) or 
-                not result.success or optimized_loss > 1e6):
-                print(f"⚠️ V2 BFGS优化失败，使用默认参数")
-                optimized_params = initial_params
-                optimized_loss = loss_function(initial_params)
-                
-        except Exception as e:
-            print(f"⚠️ V2 BFGS优化异常: {e}，使用默认参数")
+        # 处理优化失败的情况
+        if np.isnan(optimized_loss) or np.isinf(optimized_loss) or not result.success:
+            print(f"⚠️ V2 BFGS优化失败，使用默认参数")
             optimized_params = initial_params
             optimized_loss = loss_function(initial_params)
         
@@ -444,9 +399,9 @@ def _load_training_data_from_path(data_path: str | None) -> Tuple[np.ndarray | N
         import pandas as pd
         df = pd.read_csv(data_path)
         data = df.values
-        # 假设最后一列为输出
-        X = data[:256, :-1]
-        y = data[:256, -1].reshape(-1)
+        # 假设最后一列为输出，使用全部样本
+        X = data[:, :-1]
+        y = data[:, -1].reshape(-1)
         var_names = df.columns[:-1].tolist()
         return X, y, var_names
     except Exception:

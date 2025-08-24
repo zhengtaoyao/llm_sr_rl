@@ -335,7 +335,7 @@ def _compute_nmse(expr: str, data_path: str) -> float | None:
         import numpy as np, pandas as pd
         df = pd.read_csv(data_path)
         data = df.values
-        X = data[:256, :-1]; y = data[:256, -1].reshape(-1)
+        X = data[:, :-1]; y = data[:, -1].reshape(-1)  # 使用全部样本
         var_names = df.columns[:-1].tolist()
         safe = {{"sin": np.sin, "cos": np.cos, "tan": np.tan, "exp": np.exp, "log": np.log, "sqrt": np.sqrt, "abs": np.abs, "tanh": np.tanh, "pi": np.pi, "e": np.e, "np": np, "__builtins__": {{}}}}
         for i, vn in enumerate(var_names):
