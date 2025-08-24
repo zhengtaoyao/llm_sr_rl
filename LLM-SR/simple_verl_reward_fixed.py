@@ -22,6 +22,13 @@ from pathlib import Path
 from typing import Any, List, Dict, Tuple
 import os
 import json
+import warnings
+
+# 🔥 数值保护：抑制数值计算警告，避免日志污染
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid value encountered')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='overflow encountered')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='divide by zero encountered')
+np.seterr(all='ignore')  # 忽略numpy的数值错误警告
 
 
 def compute_score(data_sources=None, solution_strs=None, ground_truths=None, extra_infos=None, **kwargs):
@@ -364,50 +371,107 @@ def build_executable_program(function_body: str, var_names: list) -> str:
     program = f"""
 import numpy as np
 import math
+from scipy.optimize import minimize
 
 def equation({params_str}):
 {function_body}
 
 def evaluate_function(inputs, outputs, var_names):
-    \"\"\"评估函数性能\"\"\"
+    \"\"\"评估函数性能 - 使用BFGS优化参数\"\"\"
     try:
-        # 准备参数
-        params = np.ones(10)  # 默认参数
+        def loss_function(params):
+            try:
+                # 🔥 数值保护：限制参数范围，防止溢出
+                params = np.clip(params, -100, 100)
+                
+                # 🔥 按照无RL版本的方式，直接传递整个数组
+                if len(var_names) == 2:  # x, v (oscillator)
+                    x_data = inputs[:, 0]
+                    v_data = inputs[:, 1] 
+                    predictions = equation(x_data, v_data, params)
+                elif len(var_names) == 4:  # b, s, temp, pH (bactgrow)
+                    b_data = inputs[:, 0]
+                    s_data = inputs[:, 1]
+                    temp_data = inputs[:, 2]
+                    pH_data = inputs[:, 3]
+                    predictions = equation(b_data, s_data, temp_data, pH_data, params)
+                elif len(var_names) == 2 and 'strain' in var_names:  # strain, temp (stressstrain)
+                    strain_data = inputs[:, 0]
+                    temp_data = inputs[:, 1]
+                    predictions = equation(strain_data, temp_data, params)
+                else:
+                    # 通用处理：传递所有列作为参数
+                    args = [inputs[:, j] for j in range(inputs.shape[1])]
+                    predictions = equation(*args, params)
+                
+                # 确保predictions是numpy数组
+                predictions = np.asarray(predictions, dtype=np.float64)
+                
+                # 🔥 数值保护：检查预测值是否有效
+                if not np.all(np.isfinite(predictions)):
+                    return 1e6
+                
+                # 🔥 数值保护：限制预测值范围，防止极端值
+                predictions = np.clip(predictions, -1e6, 1e6)
+                
+                # 处理标量返回值
+                if predictions.ndim == 0:
+                    predictions = np.full_like(outputs, float(predictions))
+                
+                # 计算MSE
+                mse = np.mean((predictions - outputs) ** 2)
+                
+                # 🔥 数值保护：确保MSE有效且不会太大
+                if not np.isfinite(mse) or mse > 1e10:
+                    return 1e6
+                    
+                return float(mse)
+                
+            except (RuntimeWarning, FloatingPointError, OverflowError, ZeroDivisionError):
+                return 1e6
+            except Exception as e:
+                return 1e6
         
-        # 🔥 按照无RL版本的方式，直接传递整个数组
-        if len(var_names) == 2:  # x, v (oscillator)
-            x_data = inputs[:, 0]
-            v_data = inputs[:, 1] 
-            predictions = equation(x_data, v_data, params)
-        elif len(var_names) == 4:  # b, s, temp, pH (bactgrow)
-            b_data = inputs[:, 0]
-            s_data = inputs[:, 1]
-            temp_data = inputs[:, 2]
-            pH_data = inputs[:, 3]
-            predictions = equation(b_data, s_data, temp_data, pH_data, params)
-        elif len(var_names) == 2 and 'strain' in var_names:  # strain, temp (stressstrain)
-            strain_data = inputs[:, 0]
-            temp_data = inputs[:, 1]
-            predictions = equation(strain_data, temp_data, params)
-        else:
-            # 通用处理：传递所有列作为参数
-            args = [inputs[:, j] for j in range(inputs.shape[1])]
-            predictions = equation(*args, params)
+        # 🔥 BFGS参数优化（模仿无RL版本）
+        initial_params = np.ones(10)
         
-        # 确保predictions是numpy数组
-        predictions = np.asarray(predictions, dtype=np.float64)
+        # 🔥 数值保护：添加参数边界约束
+        from scipy.optimize import Bounds
+        bounds = Bounds(-100, 100)  # 限制参数在[-100, 100]范围内
         
-        # 处理标量返回值
-        if predictions.ndim == 0:
-            predictions = np.full_like(outputs, float(predictions))
+        # 🔥 数值保护：设置优化选项，增加数值稳定性
+        options = {
+            'maxiter': 100,  # 限制最大迭代次数
+            'ftol': 1e-6,    # 函数容差
+            'gtol': 1e-6     # 梯度容差
+        }
         
-        # 计算MSE
-        mse = np.mean((predictions - outputs) ** 2)
-        return float(mse) if np.isfinite(mse) else 1e6, params
+        try:
+            # 使用L-BFGS-B方法，支持边界约束
+            result = minimize(loss_function, initial_params, method='L-BFGS-B', 
+                            bounds=bounds, options=options)
+            
+            # 获取优化后的参数和损失
+            optimized_params = result.x
+            optimized_loss = result.fun
+            
+            # 处理优化失败的情况
+            if (np.isnan(optimized_loss) or np.isinf(optimized_loss) or 
+                not result.success or optimized_loss > 1e6):
+                print(f"⚠️ BFGS优化失败，使用默认参数")
+                optimized_params = initial_params
+                optimized_loss = loss_function(initial_params)
+                
+        except Exception as e:
+            print(f"⚠️ BFGS优化异常: {e}，使用默认参数")
+            optimized_params = initial_params
+            optimized_loss = loss_function(initial_params)
+        
+        return float(optimized_loss), optimized_params
         
     except Exception as e:
         print(f"❌ 函数执行错误: {{e}}")
-        return 1e6, params
+        return 1e6, np.ones(10)
 """
     
     return program
