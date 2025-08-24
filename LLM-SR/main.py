@@ -50,12 +50,14 @@ parser.add_argument('--num_grid_groups', type=int, default=10,
                     help='Number of grid groups for dataset (v2)')
 parser.add_argument('--kl_coef', type=float, default=1e-3,
                     help='KL coefficient for v2 GRPO')
-parser.add_argument('--max_prompt_length', type=int, default=2048,
+parser.add_argument('--max_prompt_length', type=int, default=4096,  # 🔥 增加到4096
                     help='Max prompt length for v2 GRPO')
-parser.add_argument('--max_new_tokens', type=int, default=1024,
+parser.add_argument('--max_new_tokens', type=int, default=8192,  # 🔥 增加到8192
                     help='Max new tokens for v2 GRPO')
-parser.add_argument('--max_model_len', type=int, default=8192,
+parser.add_argument('--max_model_len', type=int, default=16384,  # 🔥 增加到16384
                     help='Max model len for v2 GRPO')
+parser.add_argument('--max_num_batched_tokens', type=int, default=8192,  # 🔥 增加到8192
+                    help='Max number of batched tokens for GRPO')
 parser.add_argument('--few_shot_k', type=int, default=3,
                     help='Few-shot examples from memory for v2 dataset builder')
 
@@ -122,6 +124,7 @@ if __name__ == '__main__':
                 max_prompt_length=args.max_prompt_length,
                 max_new_tokens=args.max_new_tokens,
                 max_model_len=args.max_model_len,
+                max_num_batched_tokens=args.max_num_batched_tokens,
                 learning_rate=args.learning_rate,
                 epochs=args.epochs,
                 few_shot_k=args.few_shot_k,
@@ -188,7 +191,12 @@ if __name__ == '__main__':
                 rollout_n=args.rollout_n,
                 experiment_name=f'llmsr_grpo_{args.problem_name}',
                 gpus=args.gpus,
-                log_dir=args.log_path
+                log_dir=args.log_path,
+                # 🔥 添加大token长度参数
+                max_prompt_length=args.max_prompt_length,
+                max_new_tokens=args.max_new_tokens,
+                max_model_len=args.max_model_len,
+                max_num_batched_tokens=args.max_num_batched_tokens
             )
         
     else:

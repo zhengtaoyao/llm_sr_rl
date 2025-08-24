@@ -41,6 +41,13 @@ def compute_score(
     groupwise_rank_norm: bool = True,
     **kwargs,
 ):
+    print(f"🔥🔥🔥 V2 REWARD FUNCTION CALLED! 🔥🔥🔥")
+    print(f"🔧 V2 parameter types: data_sources={type(data_sources)}, solution_strs={type(solution_strs)}, ground_truths={type(ground_truths)}, extra_infos={type(extra_infos)}")
+    print(f"🔧 V2 Solution strings count: {len(solution_strs) if solution_strs else 0}")
+    if solution_strs and len(solution_strs) > 0:
+        print(f"🔧 V2 First solution preview: {solution_strs[0][:200] if solution_strs[0] else 'None'}...")
+    print(f"🔧 V2 LLMSR_OUTPUT_DIR env: {os.environ.get('LLMSR_OUTPUT_DIR', 'NOT_SET')}")
+    
     # 输入兜底
     solution_strs = solution_strs or []
     extra_infos = extra_infos or [{} for _ in range(len(solution_strs))]
@@ -207,6 +214,48 @@ def _extract_math_expr(code: str) -> str:
     if not code or not isinstance(code, str):
         return ""
     code = code.strip()
+    
+    # 🔧 处理包含 <think> 标签的情况，提取实际代码部分
+    if "</think>" in code:
+        parts = code.split("</think>")
+        if len(parts) > 1:
+            code = parts[-1].strip()  # 取最后一部分
+    elif "<think>" in code:
+        # 🔥 处理截断情况：如果有<think>但没有</think>，可能被截断了
+        # 尝试在<think>标签后查找可能的代码
+        think_parts = code.split("<think>")
+        if len(think_parts) > 1:
+            # 取最后一个<think>之后的内容，可能包含部分代码
+            after_think = think_parts[-1].strip()
+            # 查找可能的代码模式
+            import re
+            # 查找函数定义或return语句
+            code_patterns = [
+                r'def\s+equation.*?return\s+([^}]+)',
+                r'return\s+([^}]+)',
+                r'a\s*=\s*([^}]+)',
+                r'acceleration\s*=\s*([^}]+)'
+            ]
+            for pattern in code_patterns:
+                matches = re.findall(pattern, after_think, re.DOTALL | re.IGNORECASE)
+                if matches:
+                    candidate = matches[-1].strip()
+                    if _valid_expr(candidate):
+                        print(f"🔧 V2从截断的<think>内容中提取表达式: {candidate}")
+                        return candidate
+    
+    # 🔧 如果包含 ```python 代码块，提取其中内容
+    if "```python" in code:
+        import re
+        code_blocks = re.findall(r'```python\s*\n(.*?)\n```', code, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1].strip()  # 取最后一个代码块
+    elif "```" in code:
+        import re
+        code_blocks = re.findall(r'```\s*\n(.*?)\n```', code, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1].strip()
+    
     lines = code.split("\n")
     assigns: Dict[str, str] = {}
     ret_var: str | None = None
@@ -242,6 +291,48 @@ def _extract_math_expr(code: str) -> str:
         s = line.strip()
         if _valid_expr(s):
             return s
+    
+    # 🔧 最后尝试：直接查找简单的数学表达式模式
+    import re
+    # 匹配类似 "a = -x" 或 "return -x" 的简单表达式
+    simple_patterns = [
+        r'return\s+([^;}\n]+)',  # return 语句
+        r'a\s*=\s*([^;}\n]+)',   # a = 表达式
+        r'result\s*=\s*([^;}\n]+)',  # result = 表达式
+        r'acceleration\s*=\s*([^;}\n]+)',  # acceleration = 表达式
+        # 🔥 新增：处理截断情况的模式
+        r'[-+]?\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?)*',  # 参数表达式
+        r'[-+]?\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?)*',  # 数值表达式
+    ]
+    
+    full_text = ' '.join(lines)
+    for pattern in simple_patterns:
+        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        if matches:
+            expr_candidate = matches[-1].strip()
+            # 清理表达式
+            expr_candidate = expr_candidate.rstrip('.,;:')  # 移除末尾标点
+            if _valid_expr(expr_candidate):
+                print(f"🔧 V2通过模式匹配找到表达式: {expr_candidate}")
+                return expr_candidate
+    
+    # 🔥 新增：专门处理截断情况的简单表达式提取
+    # 查找任何看起来像数学表达式的内容
+    math_like_patterns = [
+        r'[-+]?\s*[xv](?:\*\*\d+)?',  # 简单的x或v项
+        r'[-+]?\s*\d+\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?',  # 数值乘以变量
+        r'[-+]?\s*params\[\d+\]',  # 参数项
+    ]
+    
+    for pattern in math_like_patterns:
+        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        if matches:
+            # 尝试组合多个匹配项
+            combined_expr = ' '.join(matches[:4])  # 最多取4项
+            if _valid_expr(combined_expr):
+                print(f"🔧 V2从截断内容中组合表达式: {combined_expr}")
+                return combined_expr
+    
     return ""
 
 

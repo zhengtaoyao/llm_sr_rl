@@ -260,6 +260,25 @@ def _extract_math_expr(code: str) -> str:
     if not code or not isinstance(code, str):
         return ""
     code = code.strip()
+    
+    # 🔧 处理包含 <think> 标签的情况，提取实际代码部分
+    if "</think>" in code:
+        parts = code.split("</think>")
+        if len(parts) > 1:
+            code = parts[-1].strip()  # 取最后一部分
+    
+    # 🔧 如果包含 ```python 代码块，提取其中内容
+    if "```python" in code:
+        import re
+        code_blocks = re.findall(r'```python\\s*\\n(.*?)\\n```', code, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1].strip()  # 取最后一个代码块
+    elif "```" in code:
+        import re
+        code_blocks = re.findall(r'```\\s*\\n(.*?)\\n```', code, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1].strip()
+    
     lines = code.split("\\n")
     assigns = {{}}
     ret_var = None
@@ -290,6 +309,25 @@ def _extract_math_expr(code: str) -> str:
         s = line.strip()
         if _valid_expr(s):
             return s
+    
+    # 🔧 最后尝试：直接查找简单的数学表达式模式
+    import re
+    # 匹配类似 "a = -x" 或 "return -x" 的简单表达式
+    simple_patterns = [
+        r'return\\s+([^;]+)',  # return 语句
+        r'a\\s*=\\s*([^;]+)',   # a = 表达式
+        r'result\\s*=\\s*([^;]+)',  # result = 表达式
+        r'acceleration\\s*=\\s*([^;]+)',  # acceleration = 表达式
+    ]
+    
+    full_text = ' '.join(lines)
+    for pattern in simple_patterns:
+        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        if matches:
+            expr_candidate = matches[-1].strip()
+            if _valid_expr(expr_candidate):
+                return expr_candidate
+    
     return ""
 
 def _compute_nmse(expr: str, data_path: str) -> float | None:
@@ -335,7 +373,13 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         rewards: List of reward scores
     """
     
+    print(f"🔥🔥🔥 REWARD FUNCTION CALLED! 🔥🔥🔥")
     print(f"🔧 Wrapper called, parameter types: data_sources={{type(data_sources)}}, solution_strs={{type(solution_strs)}}, ground_truths={{type(ground_truths)}}, extra_infos={{type(extra_infos)}}")
+    print(f"🔧 Solution strings count: {{len(solution_strs) if solution_strs else 0}}")
+    if solution_strs and len(solution_strs) > 0:
+        print(f"🔧 First solution preview: {{solution_strs[0][:200] if solution_strs[0] else 'None'}}...")
+    print(f"🔧 OUTPUT_DIR: {{OUTPUT_DIR}}")
+    print(f"🔧 LLMSR_OUTPUT_DIR env: {{os.environ.get('LLMSR_OUTPUT_DIR', 'NOT_SET')}}")
     
     # 🔧 Handle None parameters
     if data_sources is None:
@@ -446,9 +490,9 @@ def create_grpo_config_direct(
     print(f"  🔥 内存优化: 启用参数/优化器offload")
     
     # 计算安全的 token 长度配置，避免 max_seq_len 超过阈值
-    prompt_len_cfg = kwargs.get('max_prompt_length', 2048)
-    response_len_cfg = kwargs.get('max_new_tokens', 4096)
-    safe_max_token_len = max(12288, int(prompt_len_cfg + response_len_cfg + 512))
+    prompt_len_cfg = kwargs.get('max_prompt_length', 4096)
+    response_len_cfg = kwargs.get('max_new_tokens', 8192)  # 🔥 增加到8192
+    safe_max_token_len = max(16384, int(prompt_len_cfg + response_len_cfg + 512))  # 🔥 增加到16384
 
     # 直连模式 GRPO 配置
     # 按需选择 logger
@@ -488,8 +532,8 @@ def create_grpo_config_direct(
             "val_files": [dataset_path],
             "prompt_key": "prompt",
             "reward_fn_key": "data_source",
-            "max_prompt_length": kwargs.get('max_prompt_length', 2048),
-            "max_response_length": kwargs.get('max_response_length', 2048),
+            "max_prompt_length": kwargs.get('max_prompt_length', 4096),  # 🔥 增加到4096
+            "max_response_length": kwargs.get('max_response_length', 8192),  # 🔥 增加到8192
             "train_batch_size": prompt_bsz,  # 🔥 使用计算得出的训练批量
             "val_batch_size": prompt_mini_bsz,  # 🔥 验证用小批量
             "return_raw_input_ids": False,
@@ -648,13 +692,13 @@ def create_grpo_config_direct(
                 "name": "vllm",
                 "mode": "sync",  # 🔥 CRITICAL: 必需字段
                 "n": rollout_n,  # 4
-                "temperature": kwargs.get('temperature', 0.8),
-                "top_p": kwargs.get('top_p', 0.9),
-                "top_k": kwargs.get('top_k', 30),
+                "temperature": kwargs.get('temperature', 0.7),  # 🔥 降低温度减少重复
+                "top_p": kwargs.get('top_p', 0.95),  # 🔥 增加top_p提高多样性
+                "top_k": kwargs.get('top_k', 50),  # 🔥 增加top_k
                 "do_sample": True,
                 "over_sample_rate": 0,
-                "prompt_length": kwargs.get('max_prompt_length', 2048),
-                "response_length": kwargs.get('max_new_tokens', 4096),
+                "prompt_length": kwargs.get('max_prompt_length', 4096),  # 🔥 增加到4096
+                "response_length": kwargs.get('max_new_tokens', 8192),  # 🔥 增加到8192
                 "dtype": "bfloat16",
                 "gpu_memory_utilization": 0.6,
                 "ignore_eos": False,
@@ -662,8 +706,8 @@ def create_grpo_config_direct(
                 "cudagraph_capture_sizes": None,
                 "free_cache_engine": True,
                 "tensor_model_parallel_size": 1,
-                "max_num_batched_tokens": 4096,  # 🔥 提升批量 token 数
-                "max_model_len": kwargs.get('max_model_len', 8192),
+                "max_num_batched_tokens": kwargs.get('max_num_batched_tokens', 8192),  # 🔥 提升批量 token 数到8192
+                "max_model_len": kwargs.get('max_model_len', 16384),  # 🔥 提升模型长度到16384
                 "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
                 "log_prob_micro_batch_size_per_gpu": micro_batch_size_per_gpu,  # 1
@@ -672,7 +716,7 @@ def create_grpo_config_direct(
                 "disable_log_stats": False,
                 "multi_stage_wake_up": False,
                 "engine_kwargs": {
-                    "vllm": {},
+                    "vllm": {},  # 🔥 penalty参数已移到rollout配置中
                     "sglang": {}
                 },
                 "calculate_log_probs": False,
@@ -728,7 +772,7 @@ def create_grpo_config_direct(
                 "over_sample_rate": 0,
                 "multi_stage_wake_up": False,
                 "engine_kwargs": {
-                    "vllm": {},
+                    "vllm": {},  # 🔥 penalty参数已移到rollout配置中
                     "sglang": {}
                 },
                 "update_weights_bucket_megabytes": 512,
@@ -940,7 +984,11 @@ def create_grpo_config_direct(
             "critic_warmup": 0, # 🔥 FIX: Add missing critic_warmup key
 
             # 训练器用于对齐/重排的最大 token 长度，同步提升到安全阈值
-            "log_prob_max_token_len_per_gpu": kwargs.get('log_prob_max_token_len_per_gpu', safe_max_token_len)
+            "log_prob_max_token_len_per_gpu": kwargs.get('log_prob_max_token_len_per_gpu', safe_max_token_len),
+            
+            # 🔧 添加缺失的 ESI 配置项
+            "esi_redundant_time": 0.0,
+            "esi_enable": False
         },
         
         # Ray 初始化
@@ -1171,7 +1219,7 @@ def create_grpo_config_http(
                 "cudagraph_capture_sizes": None,
                 "free_cache_engine": False,
                 "tensor_model_parallel_size": 1,
-                "max_num_batched_tokens": 8192,
+                "max_num_batched_tokens": kwargs.get('max_num_batched_tokens', 8192),
                 "max_model_len": kwargs.get('max_model_len', 2048),  # 🔥 减小到2048以匹配max_num_batched_tokens
                 "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
@@ -1181,7 +1229,7 @@ def create_grpo_config_http(
                 "disable_log_stats": False,
                 "multi_stage_wake_up": False,
                 "engine_kwargs": {
-                    "vllm": {},
+                    "vllm": {},  # 🔥 penalty参数已移到rollout配置中
                     "sglang": {}
                 },
                 "calculate_log_probs": False,
@@ -1344,7 +1392,11 @@ def create_grpo_config_http(
             "profile_steps": None,
             "default_hdfs_dir": None,
 
-            "resume_mode": "disable"
+            "resume_mode": "disable",
+            
+            # 🔧 添加缺失的 ESI 配置项
+            "esi_redundant_time": 0.0,
+            "esi_enable": False
         },
         
         # Ray 初始化

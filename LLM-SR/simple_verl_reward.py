@@ -27,8 +27,12 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         rewards: 奖励分数列表（浮点数）
     """
     
+    print(f"🔥🔥🔥 SIMPLE REWARD FUNCTION CALLED! 🔥🔥🔥")
     print(f"🔧 奖励函数被调用，参数: data_sources={type(data_sources)}, solution_strs={type(solution_strs)}, ground_truths={type(ground_truths)}, extra_infos={type(extra_infos)}")
     print(f"🔧 kwargs: {list(kwargs.keys())}")
+    print(f"🔧 Solution strings count: {len(solution_strs) if solution_strs else 0}")
+    if solution_strs and len(solution_strs) > 0:
+        print(f"🔧 First solution preview: {solution_strs[0][:200] if solution_strs[0] else 'None'}...")
     
     # 🔧 处理默认参数值，避免 TypeError
     if data_sources is None:
@@ -195,13 +199,55 @@ def evaluate_single_solution(solution_str: str, inputs: np.ndarray, outputs: np.
 
 
 def extract_mathematical_expression(solution_str: str) -> str:
-    """从生成的代码中提取数学表达式，支持复杂的多行代码"""
+    """从生成的代码中提取数学表达式，支持复杂的多行代码和截断处理"""
     
     if not solution_str or not isinstance(solution_str, str):
         return ""
     
     # 清理输入
     solution_str = solution_str.strip()
+    
+    # 🔧 处理包含 <think> 标签的情况，提取实际代码部分
+    if "</think>" in solution_str:
+        parts = solution_str.split("</think>")
+        if len(parts) > 1:
+            solution_str = parts[-1].strip()  # 取最后一部分
+    elif "<think>" in solution_str:
+        # 🔥 处理截断情况：如果有<think>但没有</think>，可能被截断了
+        # 尝试在<think>标签后查找可能的代码
+        think_parts = solution_str.split("<think>")
+        if len(think_parts) > 1:
+            # 取最后一个<think>之后的内容，可能包含部分代码
+            after_think = think_parts[-1].strip()
+            # 查找可能的代码模式
+            import re
+            # 查找函数定义或return语句
+            code_patterns = [
+                r'def\s+equation.*?return\s+([^}]+)',
+                r'return\s+([^}]+)',
+                r'a\s*=\s*([^}]+)',
+                r'acceleration\s*=\s*([^}]+)'
+            ]
+            for pattern in code_patterns:
+                matches = re.findall(pattern, after_think, re.DOTALL | re.IGNORECASE)
+                if matches:
+                    candidate = matches[-1].strip()
+                    if _is_valid_math_expression(candidate):
+                        print(f"🔧 从截断的<think>内容中提取表达式: {candidate}")
+                        return candidate
+    
+    # 🔧 如果包含 ```python 代码块，提取其中内容
+    if "```python" in solution_str:
+        import re
+        code_blocks = re.findall(r'```python\s*\n(.*?)\n```', solution_str, re.DOTALL)
+        if code_blocks:
+            solution_str = code_blocks[-1].strip()  # 取最后一个代码块
+    elif "```" in solution_str:
+        import re
+        code_blocks = re.findall(r'```\s*\n(.*?)\n```', solution_str, re.DOTALL)
+        if code_blocks:
+            solution_str = code_blocks[-1].strip()
+    
     lines = solution_str.split('\n')
     
     # 构建变量追踪，用于理解赋值关系
@@ -265,8 +311,49 @@ def extract_mathematical_expression(solution_str: str) -> str:
             if _is_valid_math_expression(cleaned_line):
                 return cleaned_line
     
+    # 🔧 最后尝试：直接查找简单的数学表达式模式
+    import re
+    # 匹配类似 "a = -x" 或 "return -x" 的简单表达式
+    simple_patterns = [
+        r'return\s+([^;}\n]+)',  # return 语句
+        r'a\s*=\s*([^;}\n]+)',   # a = 表达式
+        r'result\s*=\s*([^;}\n]+)',  # result = 表达式
+        r'acceleration\s*=\s*([^;}\n]+)',  # acceleration = 表达式
+        # 🔥 新增：处理截断情况的模式
+        r'[-+]?\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?)*',  # 参数表达式
+        r'[-+]?\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?)*',  # 数值表达式
+    ]
+    
+    full_text = ' '.join(lines)
+    for pattern in simple_patterns:
+        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        if matches:
+            expr_candidate = matches[-1].strip()
+            # 清理表达式
+            expr_candidate = expr_candidate.rstrip('.,;:')  # 移除末尾标点
+            if _is_valid_math_expression(expr_candidate):
+                print(f"🔧 通过模式匹配找到表达式: {expr_candidate}")
+                return expr_candidate
+    
+    # 🔥 新增：专门处理截断情况的简单表达式提取
+    # 查找任何看起来像数学表达式的内容
+    math_like_patterns = [
+        r'[-+]?\s*[xv](?:\*\*\d+)?',  # 简单的x或v项
+        r'[-+]?\s*\d+\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?',  # 数值乘以变量
+        r'[-+]?\s*params\[\d+\]',  # 参数项
+    ]
+    
+    for pattern in math_like_patterns:
+        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        if matches:
+            # 尝试组合多个匹配项
+            combined_expr = ' '.join(matches[:4])  # 最多取4项
+            if _is_valid_math_expression(combined_expr):
+                print(f"🔧 从截断内容中组合表达式: {combined_expr}")
+                return combined_expr
+    
     # 如果都没找到，返回空字符串
-    print(f"⚠️ 无法从代码中提取数学表达式: {solution_str}")
+    print(f"⚠️ 无法从代码中提取数学表达式: {solution_str[:200]}...")
     return ""
 
 

@@ -11,14 +11,20 @@ set -e
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export GPUS=${GPUS:-8}
 
-# 🎯 训练配置 - 参照HTTP模式但使用直连
+# 🎯 训练配置 - 直连模式，大token长度优化
 PROBLEM_NAME=${PROBLEM_NAME:-"oscillator1"}
 MODEL_PATH="/storage/home/westlakeLab/zhangjunlei/Qwen3-8B"
 EPOCHS=${EPOCHS:-10}
-BATCH_SIZE=${BATCH_SIZE:-24}       # 24 * 6 = 144, 适合6卡训练
+BATCH_SIZE=${BATCH_SIZE:-16}       # 🔥 减小批量大小以适应大token长度
 LEARNING_RATE=${LEARNING_RATE:-1e-6}
 ROLLOUT_N=${ROLLOUT_N:-4}          # 4 个 rollout
-MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-2}  # 减少微批量大小
+MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-1}  # 🔥 进一步减少微批量大小
+
+# 🔥 大token长度配置 - 基于46GB/81GB显存使用情况优化
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}      # 提示长度：4K tokens
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-8192}            # 生成长度：8K tokens  
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}             # 模型最大长度：16K tokens
+MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}  # 批量token数：8K
 
 # 📁 路径配置 - 完全参照HTTP模式
 SPEC_PATH="./specs/specification_${PROBLEM_NAME}_numpy.txt"
@@ -67,19 +73,24 @@ if [[ ! -d "$LOG_DIR" ]]; then
   mkdir -p "$LOG_DIR" 2>/dev/null || true
 fi
 
-# 显示配置信息 - 参照HTTP模式
-echo -e "${PURPLE}🔥 训练配置 (直连):${NC}"
-echo -e "${GREEN}📋 配置信息:${NC}"
+# 显示配置信息 - 大token长度优化版本
+echo -e "${PURPLE}🔥 训练配置 (直连 + 大Token优化):${NC}"
+echo -e "${GREEN}📋 基础配置:${NC}"
 echo -e "  问题: ${YELLOW}$PROBLEM_NAME${NC}"
 echo -e "  模型: ${YELLOW}Qwen3-8B (直连)${NC}"
 echo -e "  模型路径: ${YELLOW}$MODEL_PATH${NC}"
 echo -e "  训练轮数: ${YELLOW}$EPOCHS${NC}"
-echo -e "  批次大小: ${YELLOW}$BATCH_SIZE${NC}"
+echo -e "  批次大小: ${YELLOW}$BATCH_SIZE${NC} (为大token优化)"
 echo -e "  学习率: ${YELLOW}$LEARNING_RATE${NC}"
 echo -e "  组大小: ${YELLOW}$ROLLOUT_N${NC}"
 echo -e "  GPU: ${YELLOW}${CUDA_VISIBLE_DEVICES} (${GPUS} 张卡)${NC}"
+echo -e "${GREEN}🚀 Token长度配置 (大幅提升):${NC}"
+echo -e "  提示长度: ${YELLOW}$MAX_PROMPT_LENGTH${NC} tokens"
+echo -e "  生成长度: ${YELLOW}$MAX_NEW_TOKENS${NC} tokens"
+echo -e "  模型最大长度: ${YELLOW}$MAX_MODEL_LEN${NC} tokens"
+echo -e "  批量Token数: ${YELLOW}$MAX_NUM_BATCHED_TOKENS${NC} tokens"
 echo -e "  输出目录: ${YELLOW}$OUTPUT_DIR${NC}"
-echo -e "  训练模式: ${YELLOW}🔥 直连模式 - 真正微调权重${NC}"
+echo -e "  训练模式: ${YELLOW}🔥 直连模式 - 真正微调权重 + 大Token支持${NC}"
 
 # 检查 conda 环境
 if [[ "$CONDA_DEFAULT_ENV" != "verl" ]]; then
@@ -101,12 +112,21 @@ else
   echo -e "${YELLOW}⚠️  未找到 nvidia-smi，跳过GPU状态检查${NC}"
 fi
 
-# 🔥 设置环境变量进行优化
+# 🔥 设置环境变量进行优化 - 大token长度优化
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=INFO
 export VLLM_LOGGING_LEVEL=WARN
-# 🔥 修复 vLLM 内存池兼容性问题：移除 expandable_segments 配置
-export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:256,garbage_collection_threshold:0.6"
+
+# 🔥 显存优化配置 - 适配大token长度
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512,garbage_collection_threshold:0.8,expandable_segments:True"
+export CUDA_LAUNCH_BLOCKING=0
+export CUDA_CACHE_DISABLE=0
+
+# 🔥 vLLM 大token优化
+export VLLM_USE_MODELSCOPE=false
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_ENGINE_ITERATION_TIMEOUT_S=1800
+
 # 🔥 设置 PYTHONPATH 确保能找到 verl 模块
 export PYTHONPATH="/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR:$PYTHONPATH"
 
@@ -139,7 +159,11 @@ CMD=(
     --rollout_n "$ROLLOUT_N" \
     --gpus "$GPUS" \
     --output_dir "$OUTPUT_DIR" \
-    --log_path "$LOG_FILE"
+    --log_path "$LOG_FILE" \
+    --max_prompt_length "$MAX_PROMPT_LENGTH" \
+    --max_new_tokens "$MAX_NEW_TOKENS" \
+    --max_model_len "$MAX_MODEL_LEN" \
+    --max_num_batched_tokens "$MAX_NUM_BATCHED_TOKENS"
 )
 
 echo -e "${BLUE}[NOHUP] ${CMD[*]}${NC}"

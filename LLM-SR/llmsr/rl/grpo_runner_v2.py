@@ -243,14 +243,15 @@ def create_grpo_config_v2(
     gpus: int = 8,
     rollout_n: int = 4,
     kl_coef: float = 1e-3,
-    max_prompt_length: int = 2048,
-    max_new_tokens: int = 1024,
-    max_model_len: int = 8192,
+    max_prompt_length: int = 4096,  # 🔥 增加到4096
+    max_new_tokens: int = 8192,     # 🔥 增加到8192
+    max_model_len: int = 16384,     # 🔥 增加到16384
+    max_num_batched_tokens: int = 8192,  # 🔥 增加到8192
     learning_rate: float = 1e-6,
     epochs: int = 5,
 ) -> DictConfig:
     # token 长度安全阈值
-    safe_max_token_len = max(12288, int(max_prompt_length + max_new_tokens + 512))
+    safe_max_token_len = max(16384, int(max_prompt_length + max_new_tokens + 512))  # 🔥 增加到16384
     micro_bsz_per_gpu = 1
     traj_micro_bsz = micro_bsz_per_gpu * gpus
     traj_mini_bsz = max(2, traj_micro_bsz * 2)
@@ -435,9 +436,9 @@ def create_grpo_config_v2(
                 "name": "vllm",
                 "mode": "sync",
                 "n": rollout_n,
-                "temperature": 0.8,
-                "top_p": 0.9,
-                "top_k": 30,
+                "temperature": 0.7,  # 🔥 降低温度减少重复
+                "top_p": 0.95,       # 🔥 增加top_p提高多样性
+                "top_k": 50,         # 🔥 增加top_k
                 "do_sample": True,
                 "over_sample_rate": 0,
                 "prompt_length": max_prompt_length,
@@ -449,7 +450,7 @@ def create_grpo_config_v2(
                 "cudagraph_capture_sizes": None,
                 "free_cache_engine": True,
                 "tensor_model_parallel_size": 1,
-                "max_num_batched_tokens": 4096,
+                "max_num_batched_tokens": max_num_batched_tokens,
                 "max_model_len": max_model_len,
                 "max_num_seqs": 1024,
                 "log_prob_micro_batch_size": None,
@@ -459,7 +460,7 @@ def create_grpo_config_v2(
                 "disable_log_stats": False,
                 "multi_stage_wake_up": False,
                 "engine_kwargs": {
-                    "vllm": {},
+                    "vllm": {},  # 🔥 penalty参数已移到rollout配置中
                     "sglang": {}
                 },
                 "calculate_log_probs": False,
@@ -503,9 +504,9 @@ def create_grpo_config_v2(
                 "val_kwargs": {
                     "_target_": "verl.workers.config.SamplingConfig",
                     "do_sample": True, 
-                    "temperature": 0.8, 
-                    "top_p": 0.9, 
-                    "top_k": 30, 
+                    "temperature": 0.7,  # 🔥 降低温度减少重复
+                    "top_p": 0.95,       # 🔥 增加top_p提高多样性
+                    "top_k": 50,         # 🔥 增加top_k
                     "n": 1
                 },
                 "calculate_log_probs": False,
@@ -514,7 +515,7 @@ def create_grpo_config_v2(
                 "over_sample_rate": 0,
                 "multi_stage_wake_up": False,
                 "engine_kwargs": {
-                    "vllm": {},
+                    "vllm": {},  # 🔥 penalty参数已移到rollout配置中
                     "sglang": {}
                 },
                 "update_weights_bucket_megabytes": 512,
@@ -697,6 +698,10 @@ def create_grpo_config_v2(
             "profile_steps": None,
             "default_hdfs_dir": None,
             "log_prob_max_token_len_per_gpu": safe_max_token_len,
+            
+            # 🔧 添加缺失的 ESI 配置项
+            "esi_redundant_time": 0.0,
+            "esi_enable": False,
         },
         "ray_kwargs": {
             "ray_init": {
@@ -743,9 +748,10 @@ def train_llmsr_grpo_v2(
     gpus: int = 8,
     rollout_n: int = 4,
     kl_coef: float = 1e-3,
-    max_prompt_length: int = 2048,
-    max_new_tokens: int = 1024,
-    max_model_len: int = 8192,
+    max_prompt_length: int = 4096,  # 🔥 增加到4096
+    max_new_tokens: int = 8192,     # 🔥 增加到8192
+    max_model_len: int = 16384,     # 🔥 增加到16384
+    max_num_batched_tokens: int = 8192,  # 🔥 增加到8192
     learning_rate: float = 1e-6,
     epochs: int = 5,
     few_shot_k: int = 3,
@@ -786,6 +792,7 @@ def train_llmsr_grpo_v2(
         max_prompt_length=max_prompt_length,
         max_new_tokens=max_new_tokens,
         max_model_len=max_model_len,
+        max_num_batched_tokens=max_num_batched_tokens,
         learning_rate=learning_rate,
         epochs=epochs,
     )
