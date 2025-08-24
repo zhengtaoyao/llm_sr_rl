@@ -178,183 +178,244 @@ def load_training_data(problem_type):
 def evaluate_single_solution(solution_str: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> float:
     """评估单个解决方案"""
     
+    # 记录到jsonl的信息
+    log_info = {
+        "solution_str": solution_str,
+        "solution_length": len(solution_str) if solution_str else 0,
+        "timestamp": __import__('time').time(),
+        "extraction_success": False,
+        "expression": "",
+        "mse": float('inf'),
+        "reward": 0.0,
+        "error": None
+    }
+    
     try:
         # 提取数学表达式
         expression = extract_mathematical_expression(solution_str)
+        log_info["expression"] = expression
+        
         if not expression:
+            log_info["error"] = "表达式提取失败"
+            print(f"❌ 表达式提取失败，解决方案长度: {len(solution_str)}")
+            _log_to_jsonl(log_info)
             return 0.0
+        
+        log_info["extraction_success"] = True
+        print(f"✅ 成功提取表达式: {expression}")
         
         # 计算MSE
         mse = compute_mse(expression, inputs, outputs, var_names)
+        log_info["mse"] = float(mse)
         
         # 返回负MSE作为奖励（MSE越小，奖励越高）
         reward = -mse
         
         # 限制奖励范围，避免数值不稳定
-        return max(min(reward, 10.0), -100.0)
+        reward = max(min(reward, 10.0), -100.0)
+        log_info["reward"] = float(reward)
+        
+        print(f"✅ 计算完成 - 表达式: {expression}, MSE: {mse:.6f}, 奖励: {reward:.6f}")
+        
+        # 记录成功的评估
+        _log_to_jsonl(log_info)
+        
+        return reward
         
     except Exception as e:
-        print(f"❌ 评估表达式时出错: {e}")
+        error_msg = f"评估表达式时出错: {e}"
+        log_info["error"] = error_msg
+        print(f"❌ {error_msg}")
+        
+        # 即使出错也要记录
+        _log_to_jsonl(log_info)
+        
         return 0.0
 
 
+def _log_to_jsonl(log_info: dict):
+    """记录评估信息到jsonl文件"""
+    try:
+        import json
+        import os
+        
+        # 获取输出目录
+        output_dir = os.environ.get('LLMSR_OUTPUT_DIR', './llmsr_grpo_outputs')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        jsonl_path = os.path.join(output_dir, 'sample.jsonl')
+        
+        # 追加写入jsonl文件
+        with open(jsonl_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_info, ensure_ascii=False) + '\n')
+            
+        print(f"📝 已记录到 {jsonl_path}")
+        
+    except Exception as e:
+        print(f"❌ 记录jsonl失败: {e}")
+
+
 def extract_mathematical_expression(solution_str: str) -> str:
-    """从生成的代码中提取数学表达式，支持复杂的多行代码和截断处理"""
+    """从LLM生成的Python代码中提取数学表达式，专注于代码块解析"""
     
     if not solution_str or not isinstance(solution_str, str):
+        print("❌ 表达式提取失败: 输入为空或非字符串")
         return ""
     
     # 清理输入
     solution_str = solution_str.strip()
+    original_length = len(solution_str)
+    print(f"🔍 开始提取表达式，输入长度: {original_length}")
     
     # 🔧 处理包含 <think> 标签的情况，提取实际代码部分
     if "</think>" in solution_str:
         parts = solution_str.split("</think>")
         if len(parts) > 1:
             solution_str = parts[-1].strip()  # 取最后一部分
-    elif "<think>" in solution_str:
-        # 🔥 处理截断情况：如果有<think>但没有</think>，可能被截断了
-        # 尝试在<think>标签后查找可能的代码
-        think_parts = solution_str.split("<think>")
-        if len(think_parts) > 1:
-            # 取最后一个<think>之后的内容，可能包含部分代码
-            after_think = think_parts[-1].strip()
-            # 查找可能的代码模式
-            import re
-            # 查找函数定义或return语句
-            code_patterns = [
-                r'def\s+equation.*?return\s+([^}]+)',
-                r'return\s+([^}]+)',
-                r'a\s*=\s*([^}]+)',
-                r'acceleration\s*=\s*([^}]+)'
-            ]
-            for pattern in code_patterns:
-                matches = re.findall(pattern, after_think, re.DOTALL | re.IGNORECASE)
-                if matches:
-                    candidate = matches[-1].strip()
-                    if _is_valid_math_expression(candidate):
-                        print(f"🔧 从截断的<think>内容中提取表达式: {candidate}")
-                        return candidate
+            print(f"🔧 从</think>后提取内容，长度: {len(solution_str)}")
     
-    # 🔧 如果包含 ```python 代码块，提取其中内容
-    if "```python" in solution_str:
-        import re
-        code_blocks = re.findall(r'```python\s*\n(.*?)\n```', solution_str, re.DOTALL)
+    import re
+    
+    # 🔥 主策略：从Python代码块中提取表达式
+    print("🔍 主策略: 解析Python代码块")
+    
+    # 1. 查找Python代码块
+    python_code_patterns = [
+        r'```python\s*\n(.*?)\n```',  # 标准Python代码块
+        r'```\s*\n(.*?)\n```',       # 通用代码块
+    ]
+    
+    for pattern in python_code_patterns:
+        code_blocks = re.findall(pattern, solution_str, re.DOTALL)
         if code_blocks:
-            solution_str = code_blocks[-1].strip()  # 取最后一个代码块
-    elif "```" in solution_str:
-        import re
-        code_blocks = re.findall(r'```\s*\n(.*?)\n```', solution_str, re.DOTALL)
-        if code_blocks:
-            solution_str = code_blocks[-1].strip()
+            print(f"🔧 找到{len(code_blocks)}个代码块")
+            for i, code_block in enumerate(code_blocks):
+                print(f"🔧 处理代码块 {i+1}")
+                # 从代码块中提取表达式
+                extracted = _extract_from_python_code(code_block.strip())
+                if extracted:
+                    print(f"✅ 从代码块{i+1}中提取到表达式: {extracted}")
+                    return extracted
     
-    lines = solution_str.split('\n')
+    # 2. 如果没有找到代码块，尝试直接解析函数定义
+    print("🔍 备用策略: 直接解析函数定义")
+    function_pattern = r'def\s+equation\s*\([^)]+\)\s*:\s*(.*?)(?=def|\Z)'
+    func_matches = re.findall(function_pattern, solution_str, re.DOTALL | re.IGNORECASE)
+    if func_matches:
+        for func_body in func_matches:
+            print(f"🔧 找到函数体，长度: {len(func_body)}")
+            extracted = _extract_from_python_code(func_body)
+            if extracted:
+                print(f"✅ 从函数体提取表达式: {extracted}")
+                return extracted
     
-    # 构建变量追踪，用于理解赋值关系
-    variable_assignments = {}
-    return_variable = None
+    # 3. 最后尝试查找简单的return语句或赋值语句
+    print("🔍 最后策略: 查找简单表达式")
+    simple_patterns = [
+        r'return\s+([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
+        r'a\s*=\s*([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
+        r'acceleration\s*=\s*([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
+    ]
     
-    # 解析每一行
+    for pattern in simple_patterns:
+        matches = re.findall(pattern, solution_str, re.IGNORECASE | re.MULTILINE)
+        if matches:
+            for match in matches:
+                cleaned = match.strip().rstrip('.,;:')
+                if _is_valid_math_expression(cleaned):
+                    print(f"✅ 从简单模式提取表达式: {cleaned}")
+                    return cleaned
+    
+    # 如果都失败了，记录详细信息
+    print("❌ 所有表达式提取策略都失败了")
+    print(f"❌ 输入文本前500字符: {solution_str[:500]}")
+    print(f"❌ 输入文本后500字符: {solution_str[-500:]}")
+    return ""
+
+
+def _extract_from_python_code(code_block: str) -> str:
+    """从Python代码中提取数学表达式，专门处理LLM生成的equation函数"""
+    
+    if not code_block:
+        return ""
+    
+    print(f"🔧 解析Python代码，长度: {len(code_block)}")
+    
+    lines = code_block.split('\n')
+    
+    # 1. 首先查找return语句（最直接的方式）
+    print("🔧 查找return语句")
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-            
-        # 查找return语句
         if line.startswith('return '):
-            return_expr = line.replace('return ', '').strip()
-            # 如果返回的是变量，记录下来
-            if return_expr.isidentifier():
-                return_variable = return_expr
-            else:
-                # 如果返回的是表达式，直接使用
-                if _is_valid_math_expression(return_expr):
-                    return return_expr
+            expr = line.replace('return ', '').strip()
+            # 清理可能的注释
+            if '#' in expr:
+                expr = expr.split('#')[0].strip()
+            if _is_valid_math_expression(expr):
+                print(f"🔧 从return语句提取: {expr}")
+                return expr
+    
+    # 2. 查找加速度相关的赋值语句
+    print("🔧 查找赋值语句")
+    assignments = {}
+    for line in lines:
+        line = line.strip()
+        # 跳过注释和函数定义
+        if line.startswith('#') or line.startswith('def') or not line:
+            continue
         
-        # 查找赋值语句
-        elif '=' in line and not line.startswith('def'):
-            parts = line.split('=', 1)  # 只分割第一个等号
+        if '=' in line and not line.startswith('def'):
+            parts = line.split('=', 1)
             if len(parts) == 2:
                 var_name = parts[0].strip()
-                expression = parts[1].strip()
-                # 记录变量赋值
-                if var_name.isidentifier() and _is_valid_math_expression(expression):
-                    variable_assignments[var_name] = expression
+                expr = parts[1].strip()
+                
+                # 清理可能的注释
+                if '#' in expr:
+                    expr = expr.split('#')[0].strip()
+                
+                # 检查是否是有效的变量名和表达式
+                if var_name.replace('_', '').isalpha() and _is_valid_math_expression(expr):
+                    assignments[var_name] = expr
+                    print(f"🔧 找到赋值: {var_name} = {expr}")
     
-    # 如果有return变量，查找其对应的表达式
-    if return_variable and return_variable in variable_assignments:
-        return variable_assignments[return_variable]
+    # 3. 优先返回acceleration相关的赋值
+    priority_vars = ['a', 'acceleration', 'result', 'output', 'acc']
+    for var in priority_vars:
+        if var in assignments:
+            print(f"🔧 选择优先变量 {var}: {assignments[var]}")
+            return assignments[var]
     
-    # 如果没有return，尝试找到最后一个有效的赋值表达式
-    if variable_assignments:
-        # 优先查找常见的变量名
-        priority_vars = ['result', 'output', 'y', 'a', 'acceleration', 'force', 'value']
-        for var in priority_vars:
-            if var in variable_assignments:
-                return variable_assignments[var]
-        
-        # 如果没有找到优先变量，返回最后一个
-        return list(variable_assignments.values())[-1]
+    # 4. 返回最后一个有效赋值（通常是最终结果）
+    if assignments:
+        last_var = list(assignments.keys())[-1]
+        last_expr = assignments[last_var]
+        print(f"🔧 选择最后赋值 {last_var}: {last_expr}")
+        return last_expr
     
-    # 方法3: 如果上述都失败，尝试直接查找数学表达式模式
+    # 5. 如果没有找到赋值，尝试查找包含params的表达式行
+    print("🔧 查找包含params的表达式")
     for line in lines:
         line = line.strip()
-        if line and not line.startswith('#') and not line.startswith('def'):
-            # 移除return和赋值部分，直接匹配数学表达式
-            cleaned_line = line
-            if 'return ' in cleaned_line:
-                cleaned_line = cleaned_line.replace('return ', '')
-            if '=' in cleaned_line:
-                cleaned_line = cleaned_line.split('=')[-1]
+        if 'params[' in line and not line.startswith('#') and not line.startswith('def'):
+            # 清理可能的注释
+            if '#' in line:
+                line = line.split('#')[0].strip()
             
-            cleaned_line = cleaned_line.strip()
-            if _is_valid_math_expression(cleaned_line):
-                return cleaned_line
+            # 如果这行看起来像一个表达式
+            if any(op in line for op in ['+', '-', '*', '/', '**']) and _is_valid_math_expression(line):
+                print(f"🔧 从params表达式提取: {line}")
+                return line
     
-    # 🔧 最后尝试：直接查找简单的数学表达式模式
-    import re
-    # 匹配类似 "a = -x" 或 "return -x" 的简单表达式
-    simple_patterns = [
-        r'return\s+([^;}\n]+)',  # return 语句
-        r'a\s*=\s*([^;}\n]+)',   # a = 表达式
-        r'result\s*=\s*([^;}\n]+)',  # result = 表达式
-        r'acceleration\s*=\s*([^;}\n]+)',  # acceleration = 表达式
-        # 🔥 新增：处理截断情况的模式
-        r'[-+]?\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?)*',  # 参数表达式
-        r'[-+]?\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?)*',  # 数值表达式
-    ]
-    
-    full_text = ' '.join(lines)
-    for pattern in simple_patterns:
-        matches = re.findall(pattern, full_text, re.IGNORECASE)
-        if matches:
-            expr_candidate = matches[-1].strip()
-            # 清理表达式
-            expr_candidate = expr_candidate.rstrip('.,;:')  # 移除末尾标点
-            if _is_valid_math_expression(expr_candidate):
-                print(f"🔧 通过模式匹配找到表达式: {expr_candidate}")
-                return expr_candidate
-    
-    # 🔥 新增：专门处理截断情况的简单表达式提取
-    # 查找任何看起来像数学表达式的内容
-    math_like_patterns = [
-        r'[-+]?\s*[xv](?:\*\*\d+)?',  # 简单的x或v项
-        r'[-+]?\s*\d+\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?',  # 数值乘以变量
-        r'[-+]?\s*params\[\d+\]',  # 参数项
-    ]
-    
-    for pattern in math_like_patterns:
-        matches = re.findall(pattern, full_text, re.IGNORECASE)
-        if matches:
-            # 尝试组合多个匹配项
-            combined_expr = ' '.join(matches[:4])  # 最多取4项
-            if _is_valid_math_expression(combined_expr):
-                print(f"🔧 从截断内容中组合表达式: {combined_expr}")
-                return combined_expr
-    
-    # 如果都没找到，返回空字符串
-    print(f"⚠️ 无法从代码中提取数学表达式: {solution_str[:200]}...")
+    print("🔧 Python代码解析失败")
     return ""
+
+
+def _extract_from_function_body(func_body: str) -> str:
+    """从函数体中提取最终的表达式，重用Python代码解析逻辑"""
+    return _extract_from_python_code(func_body)
 
 
 def _is_valid_math_expression(expr: str) -> bool:

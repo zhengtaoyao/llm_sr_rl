@@ -212,7 +212,7 @@ Wrapper for v2 reward to plug into VERL custom_reward_function.
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from llmsr.rl.simple_verl_reward_v2 import compute_score as compute_score_v2
+from llmsr.rl.simple_verl_reward_v2_fixed import compute_score as compute_score_v2
 
 
 def compute_score(data_sources=None, solution_strs=None, ground_truths=None, extra_infos=None, **kwargs):

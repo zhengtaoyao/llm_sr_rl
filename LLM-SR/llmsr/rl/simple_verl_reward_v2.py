@@ -211,129 +211,165 @@ def _load_training_data_from_path(data_path: str | None) -> Tuple[np.ndarray | N
 
 
 def _extract_math_expr(code: str) -> str:
+    """从LLM生成的Python代码中提取数学表达式，专注于代码块解析 - V2版本"""
+    
     if not code or not isinstance(code, str):
+        print("❌ V2表达式提取失败: 输入为空或非字符串")
         return ""
+    
+    # 清理输入
     code = code.strip()
+    original_length = len(code)
+    print(f"🔍 V2开始提取表达式，输入长度: {original_length}")
     
     # 🔧 处理包含 <think> 标签的情况，提取实际代码部分
     if "</think>" in code:
         parts = code.split("</think>")
         if len(parts) > 1:
             code = parts[-1].strip()  # 取最后一部分
-    elif "<think>" in code:
-        # 🔥 处理截断情况：如果有<think>但没有</think>，可能被截断了
-        # 尝试在<think>标签后查找可能的代码
-        think_parts = code.split("<think>")
-        if len(think_parts) > 1:
-            # 取最后一个<think>之后的内容，可能包含部分代码
-            after_think = think_parts[-1].strip()
-            # 查找可能的代码模式
-            import re
-            # 查找函数定义或return语句
-            code_patterns = [
-                r'def\s+equation.*?return\s+([^}]+)',
-                r'return\s+([^}]+)',
-                r'a\s*=\s*([^}]+)',
-                r'acceleration\s*=\s*([^}]+)'
-            ]
-            for pattern in code_patterns:
-                matches = re.findall(pattern, after_think, re.DOTALL | re.IGNORECASE)
-                if matches:
-                    candidate = matches[-1].strip()
-                    if _valid_expr(candidate):
-                        print(f"🔧 V2从截断的<think>内容中提取表达式: {candidate}")
-                        return candidate
+            print(f"🔧 V2从</think>后提取内容，长度: {len(code)}")
     
-    # 🔧 如果包含 ```python 代码块，提取其中内容
-    if "```python" in code:
-        import re
-        code_blocks = re.findall(r'```python\s*\n(.*?)\n```', code, re.DOTALL)
-        if code_blocks:
-            code = code_blocks[-1].strip()  # 取最后一个代码块
-    elif "```" in code:
-        import re
-        code_blocks = re.findall(r'```\s*\n(.*?)\n```', code, re.DOTALL)
-        if code_blocks:
-            code = code_blocks[-1].strip()
-    
-    lines = code.split("\n")
-    assigns: Dict[str, str] = {}
-    ret_var: str | None = None
-
-    for line in lines:
-        s = line.strip()
-        if not s or s.startswith('#'):
-            continue
-        if s.startswith('return '):
-            val = s[len('return '):].strip()
-            if val.isidentifier():
-                ret_var = val
-            else:
-                if _valid_expr(val):
-                    return val
-        elif '=' in s and not s.startswith('def'):
-            left, right = s.split('=', 1)
-            left = left.strip()
-            right = right.strip()
-            if left.isidentifier() and _valid_expr(right):
-                assigns[left] = right
-
-    if ret_var and ret_var in assigns:
-        return assigns[ret_var]
-    if assigns:
-        #回退：取最后一个或常见名称
-        for k in ["result", "output", "y", "a", "value"]:
-            if k in assigns:
-                return assigns[k]
-        return list(assigns.values())[-1]
-    # 直接匹配
-    for line in lines:
-        s = line.strip()
-        if _valid_expr(s):
-            return s
-    
-    # 🔧 最后尝试：直接查找简单的数学表达式模式
     import re
-    # 匹配类似 "a = -x" 或 "return -x" 的简单表达式
+    
+    # 🔥 主策略：从Python代码块中提取表达式
+    print("🔍 V2主策略: 解析Python代码块")
+    
+    # 1. 查找Python代码块
+    python_code_patterns = [
+        r'```python\s*\n(.*?)\n```',  # 标准Python代码块
+        r'```\s*\n(.*?)\n```',       # 通用代码块
+    ]
+    
+    for pattern in python_code_patterns:
+        code_blocks = re.findall(pattern, code, re.DOTALL)
+        if code_blocks:
+            print(f"🔧 V2找到{len(code_blocks)}个代码块")
+            for i, code_block in enumerate(code_blocks):
+                print(f"🔧 V2处理代码块 {i+1}")
+                # 从代码块中提取表达式
+                extracted = _extract_from_python_code_v2(code_block.strip())
+                if extracted:
+                    print(f"✅ V2从代码块{i+1}中提取到表达式: {extracted}")
+                    return extracted
+    
+    # 2. 如果没有找到代码块，尝试直接解析函数定义
+    print("🔍 V2备用策略: 直接解析函数定义")
+    function_pattern = r'def\s+equation\s*\([^)]+\)\s*:\s*(.*?)(?=def|\Z)'
+    func_matches = re.findall(function_pattern, code, re.DOTALL | re.IGNORECASE)
+    if func_matches:
+        for func_body in func_matches:
+            print(f"🔧 V2找到函数体，长度: {len(func_body)}")
+            extracted = _extract_from_python_code_v2(func_body)
+            if extracted:
+                print(f"✅ V2从函数体提取表达式: {extracted}")
+                return extracted
+    
+    # 3. 最后尝试查找简单的return语句或赋值语句
+    print("🔍 V2最后策略: 查找简单表达式")
     simple_patterns = [
-        r'return\s+([^;}\n]+)',  # return 语句
-        r'a\s*=\s*([^;}\n]+)',   # a = 表达式
-        r'result\s*=\s*([^;}\n]+)',  # result = 表达式
-        r'acceleration\s*=\s*([^;}\n]+)',  # acceleration = 表达式
-        # 🔥 新增：处理截断情况的模式
-        r'[-+]?\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*params\[\d+\]\s*\*\s*[xv](?:\*\*\d+)?)*',  # 参数表达式
-        r'[-+]?\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?(?:\s*[-+]\s*\d*\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?)*',  # 数值表达式
+        r'return\s+([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
+        r'a\s*=\s*([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
+        r'acceleration\s*=\s*([^.\n]+?)(?=\s*$|\s*\n|\s*#|$)',
     ]
     
-    full_text = ' '.join(lines)
     for pattern in simple_patterns:
-        matches = re.findall(pattern, full_text, re.IGNORECASE)
+        matches = re.findall(pattern, code, re.IGNORECASE | re.MULTILINE)
         if matches:
-            expr_candidate = matches[-1].strip()
-            # 清理表达式
-            expr_candidate = expr_candidate.rstrip('.,;:')  # 移除末尾标点
-            if _valid_expr(expr_candidate):
-                print(f"🔧 V2通过模式匹配找到表达式: {expr_candidate}")
-                return expr_candidate
+            for match in matches:
+                cleaned = match.strip().rstrip('.,;:')
+                if _valid_expr(cleaned):
+                    print(f"✅ V2从简单模式提取表达式: {cleaned}")
+                    return cleaned
     
-    # 🔥 新增：专门处理截断情况的简单表达式提取
-    # 查找任何看起来像数学表达式的内容
-    math_like_patterns = [
-        r'[-+]?\s*[xv](?:\*\*\d+)?',  # 简单的x或v项
-        r'[-+]?\s*\d+\.?\d*\s*\*?\s*[xv](?:\*\*\d+)?',  # 数值乘以变量
-        r'[-+]?\s*params\[\d+\]',  # 参数项
-    ]
-    
-    for pattern in math_like_patterns:
-        matches = re.findall(pattern, full_text, re.IGNORECASE)
-        if matches:
-            # 尝试组合多个匹配项
-            combined_expr = ' '.join(matches[:4])  # 最多取4项
-            if _valid_expr(combined_expr):
-                print(f"🔧 V2从截断内容中组合表达式: {combined_expr}")
-                return combined_expr
-    
+    # 如果都失败了，记录详细信息
+    print("❌ V2所有表达式提取策略都失败了")
+    print(f"❌ V2输入文本前500字符: {code[:500]}")
+    print(f"❌ V2输入文本后500字符: {code[-500:]}")
     return ""
+
+
+def _extract_from_python_code_v2(code_block: str) -> str:
+    """V2版本：从Python代码中提取数学表达式，专门处理LLM生成的equation函数"""
+    
+    if not code_block:
+        return ""
+    
+    print(f"🔧 V2解析Python代码，长度: {len(code_block)}")
+    
+    lines = code_block.split('\n')
+    
+    # 1. 首先查找return语句（最直接的方式）
+    print("🔧 V2查找return语句")
+    for line in lines:
+        line = line.strip()
+        if line.startswith('return '):
+            expr = line.replace('return ', '').strip()
+            # 清理可能的注释
+            if '#' in expr:
+                expr = expr.split('#')[0].strip()
+            if _valid_expr(expr):
+                print(f"🔧 V2从return语句提取: {expr}")
+                return expr
+    
+    # 2. 查找加速度相关的赋值语句
+    print("🔧 V2查找赋值语句")
+    assignments = {}
+    for line in lines:
+        line = line.strip()
+        # 跳过注释和函数定义
+        if line.startswith('#') or line.startswith('def') or not line:
+            continue
+        
+        if '=' in line and not line.startswith('def'):
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                var_name = parts[0].strip()
+                expr = parts[1].strip()
+                
+                # 清理可能的注释
+                if '#' in expr:
+                    expr = expr.split('#')[0].strip()
+                
+                # 检查是否是有效的变量名和表达式
+                if var_name.replace('_', '').isalpha() and _valid_expr(expr):
+                    assignments[var_name] = expr
+                    print(f"🔧 V2找到赋值: {var_name} = {expr}")
+    
+    # 3. 优先返回acceleration相关的赋值
+    priority_vars = ['a', 'acceleration', 'result', 'output', 'acc']
+    for var in priority_vars:
+        if var in assignments:
+            print(f"🔧 V2选择优先变量 {var}: {assignments[var]}")
+            return assignments[var]
+    
+    # 4. 返回最后一个有效赋值（通常是最终结果）
+    if assignments:
+        last_var = list(assignments.keys())[-1]
+        last_expr = assignments[last_var]
+        print(f"🔧 V2选择最后赋值 {last_var}: {last_expr}")
+        return last_expr
+    
+    # 5. 如果没有找到赋值，尝试查找包含params的表达式行
+    print("🔧 V2查找包含params的表达式")
+    for line in lines:
+        line = line.strip()
+        if 'params[' in line and not line.startswith('#') and not line.startswith('def'):
+            # 清理可能的注释
+            if '#' in line:
+                line = line.split('#')[0].strip()
+            
+            # 如果这行看起来像一个表达式
+            if any(op in line for op in ['+', '-', '*', '/', '**']) and _valid_expr(line):
+                print(f"🔧 V2从params表达式提取: {line}")
+                return line
+    
+    print("🔧 V2Python代码解析失败")
+    return ""
+
+
+def _extract_from_function_body_v2(func_body: str) -> str:
+    """V2版本：从函数体中提取最终的表达式，重用Python代码解析逻辑"""
+    return _extract_from_python_code_v2(func_body)
 
 
 def _valid_expr(expr: str) -> bool:

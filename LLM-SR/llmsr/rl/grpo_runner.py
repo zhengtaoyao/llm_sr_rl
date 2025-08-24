@@ -242,7 +242,7 @@ from pathlib import Path
 
 # Import simplified reward function
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from simple_verl_reward import compute_score as simple_compute_score
+from simple_verl_reward_fixed import compute_score as simple_compute_score
 
 # 输出目录（由 runner 注入）
 OUTPUT_DIR = r"{output_dir}"
