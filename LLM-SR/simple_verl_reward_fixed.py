@@ -194,11 +194,11 @@ def evaluate_single_solution_fixed(solution_str: str, inputs: np.ndarray, output
     
     # 记录到jsonl的信息
     log_info = {
-        "solution_str": solution_str,
         "solution_length": len(solution_str) if solution_str else 0,
         "timestamp": time.time(),
         "execution_success": False,
         "function_body": "",
+        "params": None,  # 将记录params数组的具体数值列表
         "mse": float('inf'),
         "reward": 0.0,
         "error": None
@@ -221,8 +221,9 @@ def evaluate_single_solution_fixed(solution_str: str, inputs: np.ndarray, output
         program = build_executable_program(function_body, var_names)
         
         # 🔥 步骤3：在安全环境中执行程序并计算MSE
-        mse = execute_and_compute_mse(program, inputs, outputs, var_names)
+        mse, params_used = execute_and_compute_mse(program, inputs, outputs, var_names)
         log_info["mse"] = float(mse)
+        log_info["params"] = params_used.tolist() if params_used is not None else None
         log_info["execution_success"] = True
         
         # 返回负MSE作为奖励（MSE越小，奖励越高）
@@ -402,17 +403,17 @@ def evaluate_function(inputs, outputs, var_names):
         
         # 计算MSE
         mse = np.mean((predictions - outputs) ** 2)
-        return float(mse) if np.isfinite(mse) else 1e6
+        return float(mse) if np.isfinite(mse) else 1e6, params
         
     except Exception as e:
         print(f"❌ 函数执行错误: {{e}}")
-        return 1e6
+        return 1e6, params
 """
     
     return program
 
 
-def execute_and_compute_mse(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> float:
+def execute_and_compute_mse(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray]:
     """
     在安全环境中执行程序并计算MSE，模仿evaluator.py的执行逻辑
     """
@@ -432,13 +433,13 @@ def execute_and_compute_mse(program: str, inputs: np.ndarray, outputs: np.ndarra
         evaluate_function = all_globals_namespace['evaluate_function']
         
         # 调用评估函数
-        mse = evaluate_function(inputs, outputs, var_names)
+        mse, params_used = evaluate_function(inputs, outputs, var_names)
         
-        return mse
+        return mse, params_used
         
     except Exception as e:
         print(f"❌ 程序执行失败: {e}")
-        return 1e6
+        return 1e6, None
 
 
 def _log_to_jsonl(log_info: dict):

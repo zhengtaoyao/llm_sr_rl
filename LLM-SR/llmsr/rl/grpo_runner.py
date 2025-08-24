@@ -434,7 +434,6 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
                 rec = {{
                     "timestamp": time.time(),
                     "expr": expr,
-                    "raw": code,
                     "reward": float(r) if r is not None else None,
                     "nmse": nmse,
                     "data_path": "{data_path}",

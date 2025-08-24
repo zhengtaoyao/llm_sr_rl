@@ -79,7 +79,7 @@ def compute_score(
         edit_mode = False
         
         # 🔥 使用新的方法：直接执行Python函数
-        reward, execution_success, mse, complexity = evaluate_single_solution_v2_fixed(
+        reward, execution_success, mse, complexity, params_used = evaluate_single_solution_v2_fixed(
             code, inputs, outputs, var_names, lambda_nmse, lambda_simp, w_fit, w_simp, w_phys, w_proc
         )
         
@@ -91,8 +91,7 @@ def compute_score(
                 rec = {
                     "timestamp": time.time(),
                     "expr": "直接执行Python函数",
-                    "raw": code,
-                    "base_expr": None,
+                    "params": params_used.tolist() if params_used is not None else None,
                     "reward": float(reward),
                     "nmse": float(mse) if mse is not None else None,
                     "complexity": float(complexity) if complexity is not None else None,
@@ -133,12 +132,12 @@ def evaluate_single_solution_v2_fixed(
     w_simp: float = 0.2,
     w_phys: float = 0.15,
     w_proc: float = 0.05
-) -> Tuple[float, bool, float, float]:
+) -> Tuple[float, bool, float, float, np.ndarray]:
     """
     🔥 V2修复版：使用无RL版本的方法直接执行Python函数 + 多成分奖励
     
     Returns:
-        reward, execution_success, mse, complexity
+        reward, execution_success, mse, complexity, params_used
     """
     
     try:
@@ -147,7 +146,7 @@ def evaluate_single_solution_v2_fixed(
         
         if not function_body:
             print(f"❌ V2函数体提取失败")
-            return -1.0, False, 1e6, 0.0
+            return -1.0, False, 1e6, 0.0, None
         
         print(f"✅ V2成功提取函数体，长度: {len(function_body)}")
         
@@ -155,10 +154,10 @@ def evaluate_single_solution_v2_fixed(
         program = build_executable_program_v2(function_body, var_names)
         
         # 🔥 步骤3：在安全环境中执行程序并计算MSE
-        mse = execute_and_compute_mse_v2(program, inputs, outputs, var_names)
+        mse, params_used = execute_and_compute_mse_v2(program, inputs, outputs, var_names)
         
         if mse >= 1e6:
-            return -1.0, False, mse, 0.0
+            return -1.0, False, mse, 0.0, params_used
         
         # 计算NMSE
         var_y = float(np.var(outputs) + 1e-9)
@@ -182,11 +181,11 @@ def evaluate_single_solution_v2_fixed(
         
         print(f"✅ V2计算完成 - MSE: {mse:.6f}, 奖励: {reward:.6f}")
         
-        return reward, True, mse, complexity
+        return reward, True, mse, complexity, params_used
         
     except Exception as e:
         print(f"❌ V2执行Python函数时出错: {e}")
-        return -1.0, False, 1e6, 0.0
+        return -1.0, False, 1e6, 0.0, None
 
 
 class _FunctionLineVisitorV2(ast.NodeVisitor):
@@ -337,17 +336,17 @@ def evaluate_function(inputs, outputs, var_names):
         
         # 计算MSE
         mse = np.mean((predictions - outputs) ** 2)
-        return float(mse) if np.isfinite(mse) else 1e6
+        return float(mse) if np.isfinite(mse) else 1e6, params
         
     except Exception as e:
         print(f"❌ V2函数执行错误: {{e}}")
-        return 1e6
+        return 1e6, params
 """
     
     return program
 
 
-def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> float:
+def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray]:
     """V2版本：在安全环境中执行程序并计算MSE"""
     
     try:
@@ -365,13 +364,13 @@ def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.nda
         evaluate_function = all_globals_namespace['evaluate_function']
         
         # 调用评估函数
-        mse = evaluate_function(inputs, outputs, var_names)
+        mse, params_used = evaluate_function(inputs, outputs, var_names)
         
-        return mse
+        return mse, params_used
         
     except Exception as e:
         print(f"❌ V2程序执行失败: {e}")
-        return 1e6
+        return 1e6, None
 
 
 def _load_training_data_from_path(data_path: str | None) -> Tuple[np.ndarray | None, np.ndarray | None, List[str] | None]:

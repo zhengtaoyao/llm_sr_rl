@@ -51,21 +51,15 @@ def build_problem_prompt(template_content: str, problem_name: str) -> str:
     # English task hint (concise; non-binding)
     if 'oscillator' in problem_name:
         task_description = """
-You are discovering a physical equation for a (possibly damped) harmonic oscillator.
-Given x (position) and v (velocity), predict a (acceleration). Prefer simple, dimensionally
-consistent expressions aligned with Hooke's law and basic physics.
+Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity. 
 """
     elif 'bactgrow' in problem_name:
         task_description = """
-You are discovering a biology equation for bacterial growth rate.
-Given b (biomass), s (substrate), temp, pH, predict db. Consider Monod-like effects
-and temperature/pH influences. Prefer simple, plausible expressions.
+Find the mathematical function skeleton that represents E. Coli bacterial growth rate, given data on population density, substrate concentration, temperature, and pH level. 
 """
     elif 'stressstrain' in problem_name:
         task_description = """
-You are discovering a materials equation for stress-strain relations.
-Given strain and temp, predict stress. Prefer simple, physically plausible forms
-(e.g., elastic regimes) unless data suggests otherwise.
+Find the mathematical function skeleton that represents stress, given data on strain and temperature in an Aluminium rod for both elastic and plastic regions.
 """
     else:
         task_description = """
