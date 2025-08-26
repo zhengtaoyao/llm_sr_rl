@@ -9,8 +9,6 @@
 4. 模仿无RL版本的处理流程
 """
 
-from __future__ import annotations
-
 import math
 import re
 from typing import Any, Dict, List, Tuple
@@ -38,6 +36,12 @@ def compute_score(
     w_phys: float = 0.15,
     w_proc: float = 0.05,
     groupwise_rank_norm: bool = True,
+    # 🔥 新增长度惩罚和解析奖励参数
+    length_penalty_alpha: float = 0.03,  # 长度惩罚系数，建议0.02-0.05
+    parse_bonus: float = 0.1,            # 解析成功奖励
+    invalid_penalty: float = -0.5,       # 无效样本惩罚
+    # 🔥 物理一致性奖励开关（默认关闭）
+    enable_physics_reward: bool = False,  # 是否启用物理一致性奖励
     **kwargs,
 ):
     print(f"🔥🔥🔥 FIXED V2 REWARD FUNCTION CALLED! 🔥🔥🔥")
@@ -79,11 +83,24 @@ def compute_score(
         edit_mode = False
         
         # 🔥 使用新的方法：直接执行Python函数
-        reward, execution_success, mse, complexity, params_used = evaluate_single_solution_v2_fixed(
-            code, inputs, outputs, var_names, lambda_nmse, lambda_simp, w_fit, w_simp, w_phys, w_proc
+        base_reward, execution_success, mse, complexity, params_used = evaluate_single_solution_v2_fixed(
+            code, inputs, outputs, var_names, lambda_nmse, lambda_simp, w_fit, w_simp, w_phys, w_proc, enable_physics_reward
         )
         
-        rewards.append(float(reward))
+        # 🔥 计算长度惩罚：reward := base_reward - α·(len_tokens/1k)
+        len_tokens = _estimate_token_length(code)
+        length_penalty = length_penalty_alpha * (len_tokens / 1000.0)
+        
+        # 🔥 解析奖励和无效惩罚
+        if execution_success:
+            parse_reward = parse_bonus  # 解析成功奖励
+        else:
+            parse_reward = invalid_penalty  # 无效样本惩罚
+        
+        # 🔥 最终奖励 = 基础奖励 - 长度惩罚 + 解析奖励/惩罚
+        final_reward = base_reward - length_penalty + parse_reward
+        
+        rewards.append(float(final_reward))
 
         # 记录样本
         if jsonl_path:
@@ -92,7 +109,11 @@ def compute_score(
                     "timestamp": time.time(),
                     "expr": "直接执行Python函数",
                     "params": params_used.tolist() if params_used is not None else None,
-                    "reward": float(reward),
+                    "reward": float(final_reward),
+                    "base_reward": float(base_reward),
+                    "length_penalty": float(length_penalty),
+                    "parse_reward": float(parse_reward),
+                    "len_tokens": int(len_tokens),
                     "nmse": float(mse) if mse is not None else None,
                     "complexity": float(complexity) if complexity is not None else None,
                     "r_fit": None,
@@ -131,8 +152,9 @@ def evaluate_single_solution_v2_fixed(
     w_fit: float = 0.6,
     w_simp: float = 0.2,
     w_phys: float = 0.15,
-    w_proc: float = 0.05
-) -> Tuple[float, bool, float, float, np.ndarray]:
+    w_proc: float = 0.05,
+    enable_physics_reward: bool = False
+):
     """
     🔥 V2修复版：使用无RL版本的方法直接执行Python函数 + 多成分奖励
     
@@ -170,8 +192,12 @@ def evaluate_single_solution_v2_fixed(
         complexity = _estimate_complexity_from_body(function_body)
         r_simp = math.exp(-lambda_simp * complexity)
         
-        # 物理一致性（简化版）
-        r_phys = _physical_consistency_v2(function_body, var_names, inputs, outputs)
+        # 物理一致性（可选，默认关闭）
+        if enable_physics_reward:
+            r_phys = _physical_consistency_v2(function_body, var_names, inputs, outputs)
+        else:
+            r_phys = 1.0  # 默认不惩罚
+            w_phys = 0.0  # 权重设为0，不影响总奖励
         
         # 过程奖励（简化版）
         r_proc = 0.5 if mse < 1.0 else 0.0
@@ -409,13 +435,219 @@ def _load_training_data_from_path(data_path: str | None) -> Tuple[np.ndarray | N
 
 
 def _estimate_complexity_from_body(function_body: str) -> float:
-    """从函数体估算复杂度"""
-    # 基于代码长度和运算符数量
-    ops = len(re.findall(r"[\+\-\*/]", function_body))
-    funcs = len(re.findall(r"(sin|cos|tan|exp|log|sqrt|abs|tanh)\(", function_body))
-    nums = len(re.findall(r"-?[0-9]*\.?[0-9]+", function_body))
-    tokens = max(1, len(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", function_body)))
-    return 0.5 * ops + 0.8 * funcs + 0.2 * nums + 0.1 * tokens
+    """
+    🔥 升级版复杂度估计：AST + 子树复用 + 常数MDL + 嵌套深度 + 分段/不可微结构
+    基于AST分析而非简单正则，更准确反映表达式的结构复杂度
+    """
+    return estimate_complexity_from_body_v3(function_body)
+
+
+# —— 基础权重（参照 PySR: 超越函数更贵） ——
+OP_WEIGHTS = {
+    'Add': 1.0, 'Sub': 1.0,
+    'Mult': 1.5, 'Div': 2.0, 'FloorDiv': 2.0, 'Mod': 2.5,
+    'Pow': 3.0,
+}
+# 常见数学函数代价；可继续扩充
+FUNC_WEIGHTS = {
+    "sin": 2.0, "cos": 2.0, "tan": 3.0,
+    "exp": 4.0, "log": 4.0, "sqrt": 3.0, "abs": 2.0, "tanh": 3.0,
+    "sinh": 3.0, "cosh": 3.0, "atan": 3.0, "asin": 3.0, "acos": 3.0,
+}
+
+
+def estimate_complexity_from_body_v3(function_body: str) -> float:
+    """
+    更精细的复杂度估计（AST + 子树复用 + 常数MDL + 嵌套深度 + 分段/不可微结构）
+    返回标量复杂度 C（越大越复杂）
+    """
+    if not function_body or not isinstance(function_body, str):
+        return 0.0
+
+    # 构造可解析的假函数，保证缩进正确
+    code = f"def __eq__(x, y, z, params):\n{function_body}"
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        # 语法不通时给高复杂度
+        return 100.0
+
+    # 找到目标函数体
+    fnode = None
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and n.name == "__eq__":
+            fnode = n
+            break
+    
+    if fnode is None:
+        return 100.0
+
+    # —— 状态容器 ——
+    stats = {
+        "op_cost": 0.0,              # 加权算子成本
+        "func_cost": 0.0,            # 加权函数成本
+        "depth_max": 0,              # 最大嵌套深度
+        "piecewise_cnt": 0,          # 分段/不可微结构出现次数
+        "pow_max_k": 1,              # 最大幂阶
+        "const_bits": 0.0,           # 常数描述长度（MDL 近似）
+        "unique_subtrees": 0,        # DAG 唯一子树计数
+        "total_subtrees": 0,         # 子树总数（用于复用率估计）
+        "poly_terms": 0,             # 估算多项式项数
+    }
+
+    # —— 子树哈希：衡量 DAG 压缩性/唯一子式数量 ——
+    from collections import defaultdict
+    counter = defaultdict(int)
+    
+    def hash_subtree(n):
+        # 基于节点类型与子结构的递归哈希（文本化）；只做启发式
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return f"Const({repr(n.value)})"
+        elif hasattr(ast, 'Num') and isinstance(n, ast.Num):  # Python < 3.8 兼容
+            return f"Const({repr(n.n)})"
+        
+        label = type(n).__name__
+        fields = []
+        for name, val in ast.iter_fields(n):
+            if isinstance(val, ast.AST):
+                fields.append((name, hash_subtree(val)))
+            elif isinstance(val, list):
+                fields.append((name, tuple(hash_subtree(x) for x in val if isinstance(x, ast.AST))))
+            elif isinstance(val, (str, int, float, bool, type(None))):
+                # 不把行号/列号等元信息纳入
+                if name not in ("lineno", "col_offset", "end_lineno", "end_col_offset", "id", "arg"):
+                    fields.append((name, val))
+        key = f"{label}:{tuple(fields)}"
+        counter[key] += 1
+        return key
+
+    # —— 遍历：统计各分量 + 记录深度/幂阶/分段结构 ——
+    def walk(n, depth=0):
+        stats["depth_max"] = max(stats["depth_max"], depth)
+        stats["total_subtrees"] += 1
+        key = hash_subtree(n)  # 触发计数
+
+        # 二元算子
+        if isinstance(n, ast.BinOp):
+            op_name = type(n.op).__name__
+            stats["op_cost"] += OP_WEIGHTS.get(op_name, 1.5)
+            if isinstance(n.op, ast.Pow):
+                # 解析幂阶（仅当指数是常数时可靠）
+                k = _extract_integer_pow(n)
+                if k is not None:
+                    stats["pow_max_k"] = max(stats["pow_max_k"], k)
+
+        # 函数调用
+        if isinstance(n, ast.Call):
+            fname = _get_call_name(n)
+            if fname:
+                stats["func_cost"] += FUNC_WEIGHTS.get(fname, 3.0)
+
+        # 分段/不可微：if-else, 比较, 条件表达式, abs()
+        if isinstance(n, (ast.If, ast.IfExp, ast.Compare)):
+            stats["piecewise_cnt"] += 1
+        if isinstance(n, ast.Call):
+            fname = _get_call_name(n)
+            if fname in ("abs",):
+                stats["piecewise_cnt"] += 1
+
+        # 常数的 MDL 近似
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            stats["const_bits"] += _constant_description_bits(n.value)
+        elif hasattr(ast, 'Num') and isinstance(n, ast.Num):  # Python < 3.8 兼容
+            stats["const_bits"] += _constant_description_bits(n.n)
+
+        # 递归子节点
+        for child in ast.iter_child_nodes(n):
+            walk(child, depth + 1)
+
+    for stmt in fnode.body:
+        walk(stmt, depth=1)
+
+    # 统计唯一子树数（DAG）
+    stats["unique_subtrees"] = sum(1 for k, c in counter.items() if c >= 1)
+
+    # 估算多项式项数（启发：按 "加法链 + 幂表达式" 粗略估计）
+    stats["poly_terms"] = _estimate_poly_terms(counter)
+
+    # —— 组合复杂度（权重可调） ——
+    # 深度额外惩罚：深层操作在计算和可解释性上都更难
+    depth_cost = 0.5 * stats["depth_max"]
+    # DAG：唯一子树越多越复杂；可用 "唯一/总数" 的比值来度量可压缩性
+    if stats["total_subtrees"] > 0:
+        dag_ratio = stats["unique_subtrees"] / float(stats["total_subtrees"])
+    else:
+        dag_ratio = 1.0
+    dag_cost = 5.0 * dag_ratio
+
+    # 幂阶、分段、项数
+    pow_cost = 0.3 * max(0, stats["pow_max_k"] - 1)
+    piece_cost = 1.5 * stats["piecewise_cnt"]
+    terms_cost = 0.2 * stats["poly_terms"]
+
+    # 合成总复杂度
+    C = (
+        stats["op_cost"]
+        + stats["func_cost"]
+        + depth_cost
+        + dag_cost
+        + 0.05 * stats["const_bits"]  # 常数的描述长度（位数/精度越高越贵）
+        + pow_cost
+        + piece_cost
+        + terms_cost
+    )
+    return float(C)
+
+
+# —— 辅助：提取函数名 ——
+def _get_call_name(node):
+    """提取函数调用的名称"""
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+# —— 辅助：提取幂指数（若为整数常数） ——
+def _extract_integer_pow(binop):
+    """提取幂运算的指数（如果是整数常数）"""
+    if isinstance(binop.op, ast.Pow):
+        if isinstance(binop.right, ast.Constant) and isinstance(binop.right.value, (int, float)):
+            try:
+                k = int(binop.right.value)
+                return k if k >= 1 else None
+            except Exception:
+                return None
+        elif hasattr(ast, 'Num') and isinstance(binop.right, ast.Num):  # Python < 3.8 兼容
+            try:
+                k = int(binop.right.n)
+                return k if k >= 1 else None
+            except Exception:
+                return None
+    return None
+
+
+# —— 辅助：MDL 近似（常数的描述长度，位数+数量级） ——
+def _constant_description_bits(v) -> float:
+    """计算常数的描述长度（MDL近似）"""
+    v = float(v)
+    if v == 0.0:
+        return 1.0
+    # 位数惩罚：小数的有效数字越多越贵（以十进制近似）
+    s = f"{v:.12g}"  # 限12位有效数字，避免科学计数法极端
+    digits = len(re.sub(r"[^0-9]", "", s))
+    # 数量级惩罚：|log10(|v|)| 越大越贵（防超大/超小常数）
+    magnitude = abs(math.log10(abs(v))) if v != 0 else 0.0
+    return digits + 2.0 * magnitude
+
+
+# —— 辅助：估算多项式项数（启发式：基于子树键） ——
+def _estimate_poly_terms(subtree_counter) -> int:
+    """估算多项式项数（启发式方法）"""
+    # 统计出现 "Add:" 的子树个数作为项分裂的粗略度量
+    terms = sum(1 for k in subtree_counter if k.startswith("BinOp:") and "Add" in k)
+    return max(0, terms)
 
 
 def _physical_consistency_v2(function_body: str, var_names: List[str], X: np.ndarray, y: np.ndarray) -> float:
@@ -429,3 +661,188 @@ def _physical_consistency_v2(function_body: str, var_names: List[str], X: np.nda
         return 1.0
     except Exception:
         return 0.2
+
+
+def _estimate_token_length(
+    text: str,
+    *,
+    # 可选：传入真实 tokenizer（优先使用）
+    hf_tokenizer=None,     # 例如 transformers 的 AutoTokenizer() 实例
+    tiktoken_encoder=None, # 例如 tiktoken.encoding_for_model(...).encode
+    tokenizer_encode_fn=None,  # 任何可调用的 encode 函数
+    model_family: str = "qwen",  # 'qwen' | 'openai' | 'llama' | 'generic'
+) -> int:
+    """
+    🔥 升级版token长度估计：精确优先 + 启发式兜底
+    1) 若提供真实 tokenizer，直接返回精确长度
+    2) 否则采用"类别分段 + 字节/4"的混合启发式，按模型家族调系数
+    """
+    
+    # ---- 1) 精确计数（优先） ----
+    if text is None or text == "":
+        return 0
+    
+    # 🔥 尝试自动加载Qwen3-8B的tokenizer
+    if hf_tokenizer is None and tiktoken_encoder is None and tokenizer_encode_fn is None:
+        hf_tokenizer = _get_qwen_tokenizer()
+    
+    try:
+        # transformers
+        if hf_tokenizer is not None and hasattr(hf_tokenizer, "encode"):
+            return int(len(hf_tokenizer.encode(text)))
+        # tiktoken
+        if tiktoken_encoder is not None and hasattr(tiktoken_encoder, "encode"):
+            return int(len(tiktoken_encoder.encode(text)))
+        # 任意可调用 encode
+        if callable(tokenizer_encode_fn):
+            return int(len(tokenizer_encode_fn(text)))
+    except Exception as e:
+        # 若失败，退回启发式
+        print(f"⚠️ Tokenizer失败，使用启发式估计: {e}")
+        pass
+
+    # ---- 2) 改进启发式（类别分段 + UTF-8字节）----
+    return _estimate_token_length_heuristic(text, model_family)
+
+
+def _get_qwen_tokenizer():
+    """尝试加载Qwen3-8B的tokenizer"""
+    try:
+        from transformers import AutoTokenizer
+        # 尝试从本地Qwen3-8B目录加载
+        qwen_path = "/storage/home/westlakeLab/zhangjunlei/Qwen3-8B"
+        if os.path.exists(qwen_path):
+            tokenizer = AutoTokenizer.from_pretrained(qwen_path, trust_remote_code=True)
+            print(f"✅ 成功加载Qwen3-8B tokenizer: {qwen_path}")
+            return tokenizer
+    except Exception as e:
+        print(f"⚠️ 无法从 {qwen_path} 加载Qwen3-8B tokenizer: {e}")
+    return None
+
+
+def _estimate_token_length_heuristic(text: str, model_family: str = "qwen") -> int:
+    """
+    启发式token长度估计：类别分段 + UTF-8字节混合模型
+    """
+    if not text:
+        return 0
+    
+    # 2.1 类别划分（尽量互斥）
+    # CJK 统一表意 & 扩展、假名、韩文音节
+    re_cjk = re.compile(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7A3]")
+    # 近似 Emoji / 表情符（覆盖常见区段）
+    re_emoji = re.compile(r"[\U0001F000-\U0001FAFF\U00002702-\U000027B0]")
+    # URL / Email（URL 先行匹配，避免被按词拆散）
+    re_url  = re.compile(r"https?://[^\s]+|www\.[^\s]+")
+    re_mail = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+    # 数字（含小数/科学计数）
+    re_num  = re.compile(r"[+-]?(?:\d+\.\d+|\d+\.|\.\d+|\d+)(?:[eE][+-]?\d+)?")
+    # 代码/操作符串
+    re_ops  = re.compile(r"[+\-*/=<>!%&|^~]+")
+    # 蛇形/驼峰词（优先抓长词，避免过度切碎）
+    re_word = re.compile(r"[A-Za-z]+(?:[_\-][A-Za-z0-9]+)*|[A-Za-z][a-z0-9]+(?:[A-Z][a-z0-9]+)+")
+    # 其它可见 ASCII 标点
+    re_punc = re.compile(r"[.,;:!?…—–()\[\]{}\<>\"'`""''#@$]")
+    # 空白
+    re_space = re.compile(r"\s+")
+
+    text_remaining = text
+
+    def _pop_all(pattern):
+        nonlocal text_remaining
+        items = pattern.findall(text_remaining)
+        text_remaining = pattern.sub(" ", text_remaining)  # 用空格占位，避免连锁影响
+        return items
+
+    urls  = _pop_all(re_url)
+    mails = _pop_all(re_mail)
+    nums  = _pop_all(re_num)
+    opss  = _pop_all(re_ops)
+    words = _pop_all(re_word)
+    # 先弹出 emoji，再匹配 CJK（避免重复计数）
+    emojis = _pop_all(re_emoji)
+    cjks   = _pop_all(re_cjk)
+    puncs  = _pop_all(re_punc)
+    spaces = _pop_all(re_space)
+
+    # 剩余零散字符（混合：可能是稀有符号、控制符等）
+    leftovers = [c for c in text_remaining if not c.isspace()]
+
+    # 2.2 模型家族系数（可按经验/标定微调）
+    if model_family.lower() in ("qwen", "qwen2", "qwen3"):
+        coef = dict(
+            en_char_per_tok = 4.0,   # 英文：4字符/Token
+            digit_char_per_tok = 3.0,# 数字：3字符/Token
+            cjk_tok_per_char = 0.65, # 中文日文韩文：~0.6–0.8 Token/字（Qwen BPE 常见区间）
+            url_char_per_tok = 3.0,  # URL 更碎：3字符/Token
+            mail_char_per_tok= 3.2,  # Email
+            ops_char_per_tok = 2.0,  # 操作符：2字符/Token
+            punc_char_per_tok= 2.5,  # 标点：2.5字符/Token
+            space_char_per_tok=10.0, # 空白：10字符/Token（大多并入相邻 token 的前导空格）
+            emoji_tok_per_char=1.3,  # emoji：1.3 Token/字符
+            leftover_char_per_tok=3.2,
+            mix_byte_weight = 0.30,  # 与"字节/4"融合的权重
+        )
+    elif model_family.lower() in ("openai", "gpt", "o"):
+        coef = dict(
+            en_char_per_tok = 4.0,
+            digit_char_per_tok = 2.8,
+            cjk_tok_per_char = 1.0,  # tiktoken 上中文更接近 1 Token/字
+            url_char_per_tok = 2.6,
+            mail_char_per_tok= 2.8,
+            ops_char_per_tok = 1.8,
+            punc_char_per_tok= 2.2,
+            space_char_per_tok=12.0,
+            emoji_tok_per_char=1.6,
+            leftover_char_per_tok=3.0,
+            mix_byte_weight = 0.35,
+        )
+    else:  # 'llama'/'generic' 兜底
+        coef = dict(
+            en_char_per_tok = 4.0,
+            digit_char_per_tok = 3.0,
+            cjk_tok_per_char = 0.9,
+            url_char_per_tok = 2.8,
+            mail_char_per_tok= 3.0,
+            ops_char_per_tok = 2.0,
+            punc_char_per_tok= 2.5,
+            space_char_per_tok=10.0,
+            emoji_tok_per_char=1.5,
+            leftover_char_per_tok=3.2,
+            mix_byte_weight = 0.30,
+        )
+
+    # 2.3 子类估计（把"字符/每Token"或"Token/字符"统一换算成 Token 计数）
+    # 英文词按字符数估计（拼合蛇形/驼峰后更接近真实 BPE）
+    en_chars = sum(len(w) for w in words)
+    tokens_en   = en_chars / coef["en_char_per_tok"]
+    tokens_num  = sum(len(s) for s in nums)  / coef["digit_char_per_tok"]
+    tokens_url  = sum(len(s) for s in urls)  / coef["url_char_per_tok"]
+    tokens_mail = sum(len(s) for s in mails) / coef["mail_char_per_tok"]
+    tokens_ops  = sum(len(s) for s in opss)  / coef["ops_char_per_tok"]
+    tokens_punc = sum(len(s) for s in puncs) / coef["punc_char_per_tok"]
+    tokens_space= sum(len(s) for s in spaces)/ coef["space_char_per_tok"]
+    tokens_cjk  = sum(len(s) for s in cjks)  * coef["cjk_tok_per_char"]
+    tokens_emoji= sum(len(s) for s in emojis)* coef["emoji_tok_per_char"]
+    tokens_left = len(leftovers) / coef["leftover_char_per_tok"]
+
+    est_class = (
+        tokens_en + tokens_num + tokens_url + tokens_mail +
+        tokens_ops + tokens_punc + tokens_space + tokens_cjk +
+        tokens_emoji + tokens_left
+    )
+
+    # 2.4 字节/4 融合（tiktoken 文档经验：平均每 Token ~4字节）
+    est_bytes = len(text.encode("utf-8")) / 4.0
+    mix_w = float(coef["mix_byte_weight"])
+    est = (1.0 - mix_w) * est_class + mix_w * est_bytes
+
+    # 2.5 保护性约束（避免极端低估/高估）
+    # - Token 不可能超过"可见字符数 * 2"（极端碎裂上限，宽松）
+    # - 也不应小于"非空字符数 / 8"（极端合并下限，宽松）
+    nonspace = len([c for c in text if not c.isspace()])
+    upper = 2.0 * nonspace + 16  # 加常数项应对很短文本
+    lower = max(1.0, nonspace / 8.0)
+    est = max(lower, min(est, upper))
+
+    return int(math.ceil(est))

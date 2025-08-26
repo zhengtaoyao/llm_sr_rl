@@ -5,7 +5,7 @@
 - 2. 与 v1 的逐项对比
   - 2.1 脚本：run_llmsr_grpo_v2.sh vs run_llmsr_grpo_direct.sh
   - 2.2 训练 Runner：grpo_runner_v2.py vs grpo_runner.py
-  - 2.3 奖励函数：simple_verl_reward_v2.py vs simple_verl_reward.py
+  - 2.3 奖励函数：simple_verl_reward_v2_fixed.py vs simple_verl_reward_fixed.py
   - 2.4 入口集成：main.py
 - 3. v2 算法设计思想（为何这样设计）
   - 3.1 奖励密化与成分化
@@ -48,8 +48,8 @@
   - v2: `_extract_prompt_header` + `MemoryManagerV2` 检索历史 Top-K 多样 few-shot，拼接入 prompt；支持网格/聚类分桶抽样；写出 `llmsr_train_v2.parquet`。
   - v1: 构建基础 prompt，可选网格分桶；写出 `llmsr_train.parquet`。
 - **奖励包装**
-  - v2: 生成 `llmsr_reward_v2.py`，调用 `simple_verl_reward_v2.compute_score`，训练前设置 `LLMSR_OUTPUT_DIR` 以便奖励落盘样本。
-  - v1: 生成 `llmsr_reward.py`，调用 `simple_verl_reward.compute_score`（简化版）。
+  - v2: 生成 `llmsr_reward_v2.py`，调用 `simple_verl_reward_v2_fixed.compute_score`，训练前设置 `LLMSR_OUTPUT_DIR` 以便奖励落盘样本。
+  - v1: 生成 `llmsr_reward.py`，调用 `simple_verl_reward_fixed.compute_score`（简化版）。
 - **GRPO 配置**
   - v2: 显式 KL 加入 loss，`loss_agg_mode: token-mean`，微批默认 1，`rollout.n` 组内多样采样，保存 `grpo_config_v2.yaml`。
   - v1: 提供直连/HTTP 两套配置，含更完整的分布式/日志/Ref 配置，直连保存 `grpo_config_direct.yaml`。
@@ -60,19 +60,22 @@
   - v2: 仅直连模式；
   - v1: 直连和 HTTP 模式（HTTP 不更新权重）。
 
-#### 2.3 奖励函数：`llmsr/rl/simple_verl_reward_v2.py` vs `simple_verl_reward.py`
-- **v2 奖励成分**
+#### 2.3 奖励函数：`llmsr/rl/simple_verl_reward_v2_fixed.py` vs `simple_verl_reward_fixed.py`
+- **v2 奖励成分（修复版）**
   - 拟合：`r_fit = exp(-λ_nmse * NMSE)`（缩放提升可学习性）。
   - 简洁：`r_simp = exp(-λ_simp * complexity)`（基于运算符/函数/常数/标识符近似复杂度）。
   - 物理一致：`r_phys`（如 log 正域等基础数值物理检查）。
   - 过程：`r_proc`（常数优化是否收敛等）。
   - 融合：`0.6*r_fit + 0.2*r_simp + 0.15*r_phys + 0.05*r_proc`。
+- **共同点（修复版 v1/v2）**
+  - 不再做“表达式字符串提取”，而是直接执行 LLM 生成的 Python 函数；内部用 BFGS 优化常数参数得到最小 MSE/NMSE。
+  - 若设置 `LLMSR_OUTPUT_DIR`，均写入 `sample.jsonl`（记录时间戳、MSE/NMSE、参数等）。
 - **组内排名归一（v2）**
   - 同一组候选按得分排序后做 rank→[1,0] 归一，削弱尺度噪声与长度偏置。
 - **样本日志与指标（v2）**
-  - 通过 `LLMSR_OUTPUT_DIR` 写入 `sample.jsonl`，逐条记录 `expr/raw/reward/nmse/complexity/...`，用于事后分析与最佳样本导出。
-- **v1 奖励**
-  - 主要基于表达式提取与 MSE 计算（返回负 MSE），无成分化、排名归一与日志记录。
+  - 通过 `LLMSR_OUTPUT_DIR` 写入 `sample.jsonl`，逐条记录 `reward/nmse/complexity/params/...`，用于事后分析与最佳样本导出。
+- **v1 奖励（修复版）**
+  - 直接执行函数 + BFGS 常数优化，奖励为 `-MSE`（带上下限裁剪），无成分化/组内排名；同样写入 `sample.jsonl`。
 
 #### 2.4 入口集成：`main.py`
 - 新增 `--use_rl_v2` 分支，进入 v2 直连管线；训练前通过环境变量传递 `LLMSR_OUTPUT_DIR` 给奖励函数。
@@ -124,20 +127,18 @@
   - 设置 `LLMSR_OUTPUT_DIR` 使奖励可写 `sample.jsonl`；
   - 训练后扫描 `sample.jsonl` 导出 `best_reward.json` 与 `best_mse.json`。
 
-#### 4.2 `llmsr/rl/simple_verl_reward_v2.py`
+#### 4.2 `llmsr/rl/simple_verl_reward_v2_fixed.py`
 - `compute_score(...)`：
-  - 提取表达式 → 计算 NMSE/复杂度/物理一致/过程奖励；
-  - 按权重融合并（可选）组内排名归一；
-  - 支持 EDIT 模式（对 `extra_info.base_impl` 做 ADD/MUL/REPLACE 小步编辑）；
-  - AST 合法性检查（函数/变量白名单 + 树深限制），不合法样本强惩罚；
-  - 若设置 `LLMSR_OUTPUT_DIR`，将每条样本落盘至 `sample.jsonl`（含 `expr/raw/reward/nmse/complexity/edit_mode/ast_ok/...`）。
+  - 直接执行 LLM 生成的 Python 函数体（无表达式抽取）→ BFGS 优化常数，得到 MSE/NMSE；
+  - 估算复杂度、物理一致、过程项并加权融合；
+  - （可选）组内排名归一；
+  - 若设置 `LLMSR_OUTPUT_DIR`，将每条样本落盘至 `sample.jsonl`（含 `reward/nmse/complexity/params/...`）。
 - 其余辅助函数：
-  - `_load_training_data_from_path`：读取CSV并限样本数；
-  - `_extract_math_expr`/`_valid_expr`：表达式抽取与基本合法性；
-  - `_compute_nmse`：NMSE 计算；
-  - `_estimate_ast_complexity`：复杂度近似；
-  - `_physical_consistency`：基础物理软约束；
-  - `_constants_optimized`：常数可优化性。
+  - `_load_training_data_from_path`：读取 CSV 使用全部样本；
+  - `extract_function_body_v2`/`_trim_function_body_v2`：从响应中提取并裁剪函数体；
+  - `_estimate_complexity_from_body`：从函数体估算复杂度；
+  - `_physical_consistency_v2`：基础物理软约束；
+  - `build_executable_program_v2`/`execute_and_compute_mse_v2`：拼装与执行评估程序。
 
 #### 4.3 `main.py` 新增参数与分支
 - 新增 `--use_rl_v2`、`--kl_coef`、`--max_prompt_length`、`--max_new_tokens`、`--max_model_len`、`--few_shot_k`、`--grid_train_data/--num_grid_groups`。

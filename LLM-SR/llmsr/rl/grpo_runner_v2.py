@@ -205,7 +205,17 @@ def create_llmsr_dataset_v2(
     return out_path
 
 
-def create_llmsr_reward_file_v2(template_path: str, data_path: str, output_dir: str, memory_dir: str, grid_train_data: bool = False) -> str:
+def create_llmsr_reward_file_v2(
+    template_path: str, 
+    data_path: str, 
+    output_dir: str, 
+    memory_dir: str, 
+    grid_train_data: bool = False,
+    length_penalty_alpha: float = 0.03,
+    parse_bonus: float = 0.1,
+    invalid_penalty: float = -0.5,
+    enable_physics_reward: bool = False
+) -> str:
     code = f'''"""
 Wrapper for v2 reward to plug into VERL custom_reward_function.
 """
@@ -225,6 +235,10 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         template_path="{template_path}",
         data_path="{data_path}",
         memory_dir="{memory_dir}",
+        length_penalty_alpha={length_penalty_alpha},
+        parse_bonus={parse_bonus},
+        invalid_penalty={invalid_penalty},
+        enable_physics_reward={enable_physics_reward},
         **kwargs
     )
 '''
@@ -755,6 +769,12 @@ def train_llmsr_grpo_v2(
     learning_rate: float = 1e-6,
     epochs: int = 5,
     few_shot_k: int = 3,
+    # 🔥 新增长度惩罚和解析奖励参数
+    length_penalty_alpha: float = 0.03,  # 长度惩罚系数，建议0.02-0.05
+    parse_bonus: float = 0.1,            # 解析成功奖励
+    invalid_penalty: float = -0.5,       # 无效样本惩罚
+    # 🔥 物理一致性奖励开关（默认关闭）
+    enable_physics_reward: bool = False,  # 是否启用物理一致性奖励
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
     memory_dir = os.path.join(output_dir, "memory_v2")
@@ -778,6 +798,10 @@ def train_llmsr_grpo_v2(
         output_dir=output_dir,
         memory_dir=memory_dir,
         grid_train_data=grid_train_data,
+        length_penalty_alpha=length_penalty_alpha,
+        parse_bonus=parse_bonus,
+        invalid_penalty=invalid_penalty,
+        enable_physics_reward=enable_physics_reward,
     )
 
     # 3) 配置

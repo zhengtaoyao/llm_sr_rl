@@ -488,10 +488,10 @@ def create_grpo_config_direct(
     print(f"  训练批量: {prompt_bsz}")
     print(f"  🔥 内存优化: 启用参数/优化器offload")
     
-    # 计算安全的 token 长度配置，避免 max_seq_len 超过阈值
-    prompt_len_cfg = kwargs.get('max_prompt_length', 4096)
-    response_len_cfg = kwargs.get('max_new_tokens', 8192)  # 🔥 增加到8192
-    safe_max_token_len = max(16384, int(prompt_len_cfg + response_len_cfg + 512))  # 🔥 增加到16384
+    # 计算安全的 token 长度配置，避免 max_seq_len 超过阈值 (减少到80%避免OOM)
+    prompt_len_cfg = kwargs.get('max_prompt_length', 3200)  # 🔥 减少到3200 (80% of 4096)
+    response_len_cfg = kwargs.get('max_new_tokens', 6400)   # 🔥 减少到6400 (80% of 8192)
+    safe_max_token_len = max(12800, int(prompt_len_cfg + response_len_cfg + 512))  # 🔥 减少到12800 (80% of 16384)
 
     # 直连模式 GRPO 配置
     # 按需选择 logger
