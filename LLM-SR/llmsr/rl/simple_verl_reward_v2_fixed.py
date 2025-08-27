@@ -20,48 +20,107 @@ from pathlib import Path
 
 
 def compute_score(
-    data_sources: List[Any] | None = None,
-    solution_strs: List[str] | None = None,
-    ground_truths: List[Any] | None = None,
-    extra_infos: List[Dict[str, Any]] | None = None,
-    *,
-    grid_train_data: bool = False,
-    template_path: str | None = None,
-    data_path: str | None = None,
-    memory_dir: str | None = None,
-    lambda_nmse: float = 3.0,
-    lambda_simp: float = 0.1,
-    w_fit: float = 0.6,
-    w_simp: float = 0.2,
-    w_phys: float = 0.15,
-    w_proc: float = 0.05,
-    groupwise_rank_norm: bool = True,
+    data_sources=None,  # 移除类型注解，保持与v1版本一致
+    solution_strs=None,
+    ground_truths=None,
+    extra_infos=None,
+    # 移除 * 使所有参数都可以位置传递，同时也支持关键字传递
+    grid_train_data=False,
+    template_path=None,
+    data_path=None,
+    memory_dir=None,
+    lambda_nmse=3.0,
+    lambda_simp=0.1,
+    w_fit=0.6,
+    w_simp=0.2,
+    w_phys=0.15,
+    w_proc=0.05,
+    groupwise_rank_norm=True,
     # 🔥 新增长度惩罚和解析奖励参数
-    length_penalty_alpha: float = 0.03,  # 长度惩罚系数，建议0.02-0.05
-    parse_bonus: float = 0.1,            # 解析成功奖励
-    invalid_penalty: float = -0.5,       # 无效样本惩罚
+    length_penalty_alpha=0.03,  # 长度惩罚系数，建议0.02-0.05
+    parse_bonus=0.1,            # 解析成功奖励
+    invalid_penalty=-0.5,       # 无效样本惩罚
     # 🔥 物理一致性奖励开关（默认关闭）
-    enable_physics_reward: bool = False,  # 是否启用物理一致性奖励
+    enable_physics_reward=False,  # 是否启用物理一致性奖励
     **kwargs,
 ):
     print(f"🔥🔥🔥 FIXED V2 REWARD FUNCTION CALLED! 🔥🔥🔥")
     print(f"🔧 V2修复版参数类型: data_sources={type(data_sources)}, solution_strs={type(solution_strs)}, ground_truths={type(ground_truths)}, extra_infos={type(extra_infos)}")
+    print(f"🔧 V2 kwargs: {list(kwargs.keys())}")
     print(f"🔧 V2 Solution strings count: {len(solution_strs) if solution_strs else 0}")
     if solution_strs and len(solution_strs) > 0:
         print(f"🔧 V2 First solution preview: {solution_strs[0][:200] if solution_strs[0] else 'None'}...")
     print(f"🔧 V2 LLMSR_OUTPUT_DIR env: {os.environ.get('LLMSR_OUTPUT_DIR', 'NOT_SET')}")
     
-    # 输入兜底
+    # 🔥 兼容v1版本的参数处理方式
+    # 尝试从kwargs中提取数据（兼容VERL的不同调用方式）
+    if not solution_strs and 'responses' in kwargs:
+        solution_strs = kwargs['responses']
+        print(f"🔧 V2 从kwargs['responses']获取solution_strs: {len(solution_strs) if solution_strs else 0}个")
+    if not solution_strs and 'generated_texts' in kwargs:
+        solution_strs = kwargs['generated_texts']
+        print(f"🔧 V2 从kwargs['generated_texts']获取solution_strs: {len(solution_strs) if solution_strs else 0}个")
+    if not extra_infos and 'batch' in kwargs:
+        extra_infos = [{'problem_type': 'oscillator1'}]  # 默认问题类型
+        print(f"🔧 V2 使用默认extra_infos: {extra_infos}")
+    
+    # 🔥 重要：处理VERL的单数形式参数（来自v1版本的经验）
+    if not solution_strs and 'solution_str' in kwargs:
+        solution_strs = [kwargs['solution_str']]  # 转换为列表
+        print(f"🔧 V2 从kwargs['solution_str']获取单个solution")
+    if not data_sources and 'data_source' in kwargs:
+        data_sources = [kwargs['data_source']]
+    if not ground_truths and 'ground_truth' in kwargs:
+        ground_truths = [kwargs['ground_truth']]
+    if not extra_infos and 'extra_info' in kwargs:
+        extra_infos = [kwargs['extra_info']]
+    
+    # 🔥 调试：检查所有参数是否为None的情况
+    if data_sources is None and solution_strs is None and ground_truths is None and extra_infos is None:
+        print("⚠️ V2 所有参数都为None，这通常发生在VERL验证阶段，返回默认标量值")
+        return 0.0
+    
+    # 🔥 输入兜底 - 与v1版本保持一致
     solution_strs = solution_strs or []
     extra_infos = extra_infos or [{} for _ in range(len(solution_strs))]
     if len(solution_strs) == 0:
-        return []
+        print("⚠️ V2 没有解决方案字符串，返回默认值 0.0")
+        return 0.0  # 🔥 返回标量而不是空列表，与v1版本一致
 
+    # 🔥 修复：优先从extra_infos提取problem_type（与v1版本一致）
+    problem_type = None
+    if extra_infos and len(extra_infos) > 0 and extra_infos[0]:
+        if isinstance(extra_infos[0], dict):
+            problem_type = extra_infos[0].get('problem_type')
+            if not problem_type and 'extra_info' in extra_infos[0]:
+                # 处理嵌套的extra_info
+                nested_info = extra_infos[0]['extra_info']
+                if isinstance(nested_info, dict):
+                    problem_type = nested_info.get('problem_type')
+    
+    print(f"🔧 V2 提取的problem_type: {problem_type}")
+    
+    # 如果没有提供data_path，尝试从problem_type构建路径
+    if not data_path and problem_type:
+        data_path = f"data/{problem_type}/train.csv"
+        print(f"🔧 V2 从problem_type构建data_path: {data_path}")
+    
     # 加载数据（使用全部样本）
     inputs, outputs, var_names = _load_training_data_from_path(data_path)
     if inputs is None:
-        # 返回惩罚
-        return [float(-1.0)] * len(solution_strs)
+        # 🔥 如果从data_path加载失败，尝试使用v1版本的load_training_data方法
+        print(f"⚠️ V2 从data_path加载失败，尝试使用v1版本的方法")
+        train_data = load_training_data_v1(problem_type)
+        if train_data is not None:
+            inputs, outputs, var_names = train_data
+    
+    if inputs is None:
+        # 🔥 返回惩罚 - 与v1版本保持一致的返回值处理
+        print(f"❌ V2 无法加载训练数据，返回惩罚值")
+        if len(solution_strs) == 1:
+            return 0.0  # 单个样本返回标量
+        else:
+            return [float(-1.0)] * len(solution_strs)  # 多个样本返回列表
 
     # 计算各项 reward
     out_dir = os.environ.get("LLMSR_OUTPUT_DIR")
@@ -102,19 +161,27 @@ def compute_score(
         
         rewards.append(float(final_reward))
 
-        # 记录样本
+        # 🔥 记录样本到sample.jsonl（模仿v1版本格式）
         if jsonl_path:
             try:
+                # 🔥 提取函数体用于记录（模仿v1版本）
+                function_body = extract_function_body_v2(code)
+                
                 rec = {
+                    "solution_length": len(code) if code else 0,  # 🔥 v1版本字段
                     "timestamp": time.time(),
-                    "expr": "直接执行Python函数",
-                    "params": params_used.tolist() if params_used is not None else None,
-                    "reward": float(final_reward),
+                    "execution_success": execution_success,  # 🔥 v1版本字段
+                    "function_body": function_body,  # 🔥 v1版本字段
+                    "params": params_used.tolist() if params_used is not None else None,  # 🔥 v1版本字段
+                    "mse": float(mse) if mse is not None else None,  # 🔥 v1版本字段
+                    "reward": float(final_reward),  # 🔥 v1版本字段
+                    "error": None if execution_success else "执行失败",  # 🔥 v1版本字段
+                    # 🔥 v2版本额外字段
                     "base_reward": float(base_reward),
                     "length_penalty": float(length_penalty),
                     "parse_reward": float(parse_reward),
                     "len_tokens": int(len_tokens),
-                    "nmse": float(mse) if mse is not None else None,
+                    "nmse": float(mse / (np.var(outputs) + 1e-9)) if mse is not None and mse < 1e6 and outputs is not None else None,
                     "complexity": float(complexity) if complexity is not None else None,
                     "r_fit": None,
                     "r_simp": None,
@@ -126,7 +193,8 @@ def compute_score(
                 }
                 with open(jsonl_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ 记录sample.jsonl失败: {e}")
                 pass
 
     # 组内排名归一（若 VERL 批次来自同一提示组，可降低尺度噪声）
@@ -136,10 +204,21 @@ def compute_score(
         ranks[order] = np.arange(len(rewards))
         rewards = (1.0 - ranks / max(1, len(rewards) - 1)).astype(np.float32).tolist()
 
-    # VERL 兼容：返回 float 或 list
+    # 🔥 VERL 兼容：返回值处理与v1版本保持一致
+    if not rewards:
+        print("⚠️ V2 没有计算出奖励，返回默认值 0.0")
+        return 0.0
+    
+    # 🔥 处理单个样本的情况（VERL验证时经常如此）
     if len(rewards) == 1:
-        return float(rewards[0])
-    return rewards
+        reward_value = float(rewards[0])
+        print(f"🎯 V2 返回单个奖励值: {reward_value}")
+        return reward_value
+    
+    # 多个样本的情况
+    rewards_array = np.array(rewards, dtype=np.float32)
+    print(f"🎯 V2 返回奖励数组，长度: {len(rewards_array)}")
+    return rewards_array.tolist()
 
 
 def evaluate_single_solution_v2_fixed(
@@ -263,7 +342,7 @@ def _trim_function_body_v2(generated_code: str) -> str:
 
 
 def extract_function_body_v2(solution_str: str) -> str:
-    """V2版本：从LLM输出中提取函数体，完全模仿sampler.py的_extract_body函数"""
+    """V2版本：从LLM输出中提取函数体，改进处理各种格式"""
     if not solution_str or not isinstance(solution_str, str):
         return ""
     
@@ -273,18 +352,112 @@ def extract_function_body_v2(solution_str: str) -> str:
         if len(parts) > 1:
             solution_str = parts[-1].strip()
     
-    # 查找Python代码块
+    # 🔥 改进：优先查找完整的函数定义
+    lines = solution_str.splitlines()
+    
+    # 首先尝试找到完整的函数定义（def equation...到函数体结束）
+    func_start = -1
+    func_end = -1
+    in_function = False
+    func_indent = None
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        
+        # 查找函数定义开始
+        if stripped.startswith("def equation") and ":" in stripped:
+            func_start = i
+            in_function = True
+            func_indent = len(line) - len(line.lstrip())
+            continue
+        
+        # 如果在函数内部
+        if in_function and line.strip():
+            current_indent = len(line) - len(line.lstrip())
+            # 如果缩进小于或等于函数定义的缩进，说明函数结束
+            if current_indent <= func_indent:
+                func_end = i
+                break
+    
+    # 如果没有找到函数结束，设置到最后
+    if func_start >= 0 and func_end == -1:
+        func_end = len(lines)
+    
+    # 如果找到了完整的函数定义，提取函数体
+    if func_start >= 0 and func_end > func_start:
+        func_lines = lines[func_start+1:func_end]
+        # 过滤掉EDIT指令（如果有的话）
+        body_lines = []
+        for line in func_lines:
+            if not line.strip().startswith("EDIT"):
+                body_lines.append(line)
+        
+        # 如果有函数体内容
+        if body_lines:
+            # 规范化缩进
+            normalized_body = []
+            for line in body_lines:
+                if line.strip():
+                    # 确保缩进为4个空格
+                    normalized_body.append('    ' + line.lstrip())
+                else:
+                    normalized_body.append('')
+            
+            body_str = '\n'.join(normalized_body) + '\n\n'
+            print(f"✅ V2成功提取完整函数体，长度: {len(body_str)}")
+            return body_str
+    
+    # 🔥 如果没有找到完整函数，尝试处理EDIT DSL格式
+    if "EDIT ADD" in solution_str:
+        edit_terms = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            # 收集EDIT ADD指令
+            if line_stripped.startswith("EDIT ADD"):
+                term = line_stripped.replace("EDIT ADD", "").strip()
+                edit_terms.append(term)
+        
+        # 如果找到了EDIT指令，构建函数体
+        if edit_terms:
+            # 构建return语句，正确处理运算符间距
+            # 将连续的项用加号连接（如果项本身不是以运算符开始）
+            return_parts = []
+            for term in edit_terms:
+                # 如果项以运算符开始（如 -params[0]），直接添加
+                if term.startswith(('+', '-')):
+                    if return_parts:  # 如果不是第一项，添加空格
+                        return_parts.append(' ')
+                    return_parts.append(term)
+                else:
+                    # 否则添加加号
+                    if return_parts:
+                        return_parts.append(' + ')
+                    return_parts.append(term)
+            
+            return_expr = ''.join(return_parts)
+            function_body = f"    return {return_expr}\n\n"
+            print(f"✅ V2成功从EDIT DSL构建函数体: {return_expr}")
+            return function_body
+    
+    # 🔥 如果前面的方法都失败了，查找Python代码块
     import re
     code_block_patterns = [
         r'```python\s*\n(.*?)\n```',
         r'```\s*\n(.*?)\n```'
     ]
     
+    code_block_content = None
     for pattern in code_block_patterns:
         matches = re.findall(pattern, solution_str, re.DOTALL)
         if matches:
-            solution_str = matches[0]  # 使用第一个代码块
+            code_block_content = matches[0]
             break
+    
+    # 如果找到代码块，递归调用自己处理代码块内容
+    if code_block_content:
+        print(f"🔍 V2在代码块中查找函数体")
+        return extract_function_body_v2(code_block_content)
     
     # 🔥 完全模仿sampler.py的_extract_body逻辑
     lines = solution_str.splitlines()
@@ -293,24 +466,81 @@ def extract_function_body_v2(solution_str: str) -> str:
     
     for lineno, line in enumerate(lines):
         # find the first 'def' program statement in the response
-        if line[:3] == 'def':  # 🔥 使用无RL版本的精确匹配
+        # 🔥 改进：处理可能的前导空格
+        stripped_line = line.lstrip()
+        if stripped_line.startswith('def equation'):  # 更具体的匹配
+            func_body_lineno = lineno
+            find_def_declaration = True
+            break
+        elif line[:3] == 'def':  # 🔥 保留原始的精确匹配作为后备
             func_body_lineno = lineno
             find_def_declaration = True
             break
     
     if find_def_declaration:
-        # 🔥 模仿无RL版本的缩进处理逻辑
-        code = ''
-        indent = '    '
-        for line in lines[func_body_lineno + 1:]:
-            if line[:4] != indent:
-                line = indent + line
-            code += line + '\n'
+        # 🔥 改进：更智能地处理函数体
+        # 从函数定义的下一行开始收集函数体
+        body_lines = []
+        base_indent = None
         
-        # 🔥 使用无RL版本的_trim_function_body确保语法正确
-        return _trim_function_body_v2(code)
+        for i in range(func_body_lineno + 1, len(lines)):
+            line = lines[i]
+            
+            # 跳过空行
+            if not line.strip():
+                continue
+            
+            # 检测基础缩进级别
+            if base_indent is None and line.strip():
+                # 计算第一个非空行的缩进
+                base_indent = len(line) - len(line.lstrip())
+            
+            # 如果遇到缩进级别小于基础缩进的行，说明函数体结束
+            if base_indent is not None and line.strip():
+                current_indent = len(line) - len(line.lstrip())
+                if current_indent < base_indent:
+                    break
+            
+            body_lines.append(line)
+        
+        # 构建函数体
+        if body_lines:
+            # 规范化缩进为4个空格
+            normalized_lines = []
+            for line in body_lines:
+                if line.strip():  # 非空行
+                    # 移除原有缩进，添加标准4空格缩进
+                    normalized_lines.append('    ' + line.lstrip())
+                else:
+                    normalized_lines.append('')
+            
+            function_body = '\n'.join(normalized_lines) + '\n'
+            return function_body
+        
+    # 🔥 如果上述方法都失败，尝试简单的return语句提取
+    # 这是为了处理某些情况下函数体直接作为字符串返回
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('return '):
+            # 提取return语句
+            return_expr = stripped[7:]  # 移除 'return '
+            function_body = f"    return {return_expr}\n"
+            print(f"✅ V2从return语句提取函数体: {function_body.strip()}")
+            return function_body
     
-    return solution_str  # 🔥 如果没找到def，返回原始sample（无RL版本的行为）
+    # 🔥 如果都失败了，检查是否整个字符串就是一个简单的表达式
+    # 去除空白行后，如果剩余内容看起来像一个Python表达式，直接作为return语句
+    non_empty_lines = [line.strip() for line in lines if line.strip()]
+    if non_empty_lines and len(non_empty_lines) <= 3:  # 简单表达式通常不超过3行
+        # 检查是否包含Python运算符或函数调用
+        expr_text = ' '.join(non_empty_lines)
+        if any(op in expr_text for op in ['+', '-', '*', '/', '**', 'np.', 'math.', 'params[']):
+            function_body = f"    return {expr_text}\n"
+            print(f"✅ V2将表达式作为函数体: {function_body.strip()}")
+            return function_body
+    
+    print(f"⚠️ V2函数体提取失败，返回空字符串。原始内容长度: {len(solution_str)}")
+    return ""  # 🔥 保持返回空字符串，这样可以明确知道提取失败
 
 
 def build_executable_program_v2(function_body: str, var_names: list) -> str:
@@ -416,6 +646,58 @@ def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.nda
     except Exception as e:
         print(f"❌ V2程序执行失败: {e}")
         return 1e6, None
+
+
+def load_training_data_v1(problem_type):
+    """根据问题类型加载训练数据（来自v1版本）"""
+    
+    if not problem_type:
+        print("⚠️ V2 问题类型未知，尝试使用oscillator1作为默认")
+        problem_type = "oscillator1"
+    
+    # 数据文件路径
+    data_file = f"data/{problem_type}/train.csv"
+    if not Path(data_file).exists():
+        print(f"❌ V2 数据文件不存在: {data_file}")
+        return None
+    
+    try:
+        df = pd.read_csv(data_file)
+        
+        if problem_type == "oscillator1":
+            if all(col in df.columns for col in ['x', 'v', 'a']):
+                inputs = df[['x', 'v']].values  # 使用全部样本
+                outputs = df['a'].values
+                var_names = ['x', 'v']
+                return inputs, outputs, var_names
+                
+        elif problem_type == "oscillator2":
+            if all(col in df.columns for col in ['t', 'x', 'v', 'a']):
+                inputs = df[['x', 'v']].values  # 只用x,v，忽略t，使用全部样本
+                outputs = df['a'].values
+                var_names = ['x', 'v']
+                return inputs, outputs, var_names
+                
+        elif problem_type == "bactgrow":
+            if all(col in df.columns for col in ['b', 's', 'temp', 'pH', 'db']):
+                inputs = df[['b', 's', 'temp', 'pH']].values  # 使用全部样本
+                outputs = df['db'].values
+                var_names = ['b', 's', 'temp', 'pH']
+                return inputs, outputs, var_names
+                
+        elif problem_type == "stressstrain":
+            if all(col in df.columns for col in ['strain', 'temp', 'stress']):
+                inputs = df[['strain', 'temp']].values  # 使用全部样本
+                outputs = df['stress'].values
+                var_names = ['strain', 'temp']
+                return inputs, outputs, var_names
+        
+        print(f"❌ V2 不支持的问题类型或数据格式: {problem_type}, 列: {list(df.columns)}")
+        return None
+        
+    except Exception as e:
+        print(f"❌ V2 加载数据时出错: {e}")
+        return None
 
 
 def _load_training_data_from_path(data_path: str | None) -> Tuple[np.ndarray | None, np.ndarray | None, List[str] | None]:

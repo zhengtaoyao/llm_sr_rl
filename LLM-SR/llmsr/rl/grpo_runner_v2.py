@@ -168,10 +168,35 @@ def create_llmsr_dataset_v2(
         df_s = df.sample(n=min(max_samples, len(df)), random_state=42).reset_index(drop=True)
         df_s["grid_group"] = 0
 
+    # 自动检测输入/输出列
+    input_cols: List[str] = []
+    output_col: str | None = None
+    
+    # 根据问题类型自动检测输入/输出列
+    if "oscillator" in data_path:
+        input_cols = [c for c in ["x", "v"] if c in df_s.columns] or df_s.columns[:-1].tolist()
+        output_col = "a" if "a" in df_s.columns else df_s.columns[-1]
+    elif "bactgrow" in data_path:
+        input_cols = [c for c in ["b", "s", "temp", "pH"] if c in df_s.columns] or df_s.columns[:-1].tolist()
+        output_col = "db" if "db" in df_s.columns else df_s.columns[-1]
+    elif "stressstrain" in data_path:
+        input_cols = [c for c in ["strain", "temp"] if c in df_s.columns] or df_s.columns[:-1].tolist()
+        output_col = "stress" if "stress" in df_s.columns else df_s.columns[-1]
+    else:
+        # 默认：假设最后一列是输出，其余是输入
+        input_cols = df_s.columns[:-1].tolist()
+        output_col = df_s.columns[-1]
+    
+    print(f"🎯 检测到输入列: {input_cols}, 输出列: {output_col}")
+
     # 组装 VERL 数据
     dataset_entries: List[Dict[str, Any]] = []
     for i in range(len(df_s)):
         row = df_s.iloc[i]
+        
+        # 🔥 提取真实的 ground truth 值（CSV中的因变量值）
+        ground_truth_value = float(row[output_col]) if output_col in row else None
+        
         # 增加 system 约束说明；user 中放入规范 + few-shot
         system_prefix = (
             "You generate equation skeletons under grammar/AST constraints.\n"
@@ -188,11 +213,18 @@ def create_llmsr_dataset_v2(
         entry = {
             "prompt": chat_prompt,
             "data_source": "llm_sr_train_v2",
-            "reward_model": {"style": "rule"},
+            "reward_model": {
+                "style": "rule",
+                # 🔥 正确使用CSV中的因变量值作为ground truth
+                "ground_truth": ground_truth_value
+            },
             "extra_info": {
                 "grid_group": int(row["grid_group"]),
                 # 记录原始数据点用于潜在物理一致性与过程奖励
                 "data_point": row.drop("grid_group").to_dict(),
+                # 记录输入/输出列信息
+                "input_cols": input_cols,
+                "output_col": output_col,
                 # 可选传递基底表达式（由后续管线填充），用于 EDIT 模式
                 "base_impl": None,
             },
@@ -220,10 +252,13 @@ def create_llmsr_reward_file_v2(
 Wrapper for v2 reward to plug into VERL custom_reward_function.
 """
 import sys
+import os
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from llmsr.rl.simple_verl_reward_v2_fixed import compute_score as compute_score_v2
 
+# 🔥 设置输出目录环境变量，确保sample.jsonl写入正确位置
+os.environ["LLMSR_OUTPUT_DIR"] = "{output_dir}"
 
 def compute_score(data_sources=None, solution_strs=None, ground_truths=None, extra_infos=None, **kwargs):
     return compute_score_v2(
@@ -521,10 +556,11 @@ def create_grpo_config_v2(
                     "temperature": 0.7,  # 🔥 降低温度减少重复
                     "top_p": 0.95,       # 🔥 增加top_p提高多样性
                     "top_k": 50,         # 🔥 增加top_k
-                    "n": 1
+                    "n": 1  # 🔥 CRITICAL: 验证时采样数量必须为1
                 },
-                "calculate_log_probs": False,
-                "free_cache_engine": True,
+                # 🔥 CRITICAL: 添加缺失的rollout字段 (v2模式)
+                "calculate_log_probs": False,  # 用于调试的rollout概率记录
+                "free_cache_engine": True,  # 生成后释放KV缓存引擎
                 "ignore_eos": False,
                 "over_sample_rate": 0,
                 "multi_stage_wake_up": False,
@@ -555,6 +591,10 @@ def create_grpo_config_v2(
                     },
                     "global_tool_config": None
                 },
+                "enable_chunked_prefill": False,
+                "load_format": "auto",
+                "layered_summon": False,
+                "layer_name_map": {},
                 "multi_turn": {
                     "_target_": "verl.workers.config.MultiTurnConfig",
                     "enable": False, 
@@ -572,22 +612,26 @@ def create_grpo_config_v2(
             },
             "ref": {
                 "log_prob_micro_batch_size": None,
+                # 🔥 CRITICAL: ref模型必须有正确的微批量大小 (不能为0!)
                 "log_prob_micro_batch_size_per_gpu": micro_bsz_per_gpu,
-                "ulysses_sequence_parallel_size": 1,
+                # 🔥 CRITICAL: 添加缺失的 ulysses_sequence_parallel_size 字段
+                "ulysses_sequence_parallel_size": 1,  # 与 actor 保持一致
                 "log_prob_use_dynamic_bsz": True,
+                # 参考模型 log_prob 的最大 token 长度同样使用安全阈值
                 "log_prob_max_token_len_per_gpu": safe_max_token_len,
-                "use_remove_padding": True,
-                "use_fused_kernels": False,
+                # 🔥 添加 DataParallelPPOActor 需要的其他字段
+                "use_remove_padding": True,  # 与 actor 保持一致
+                "use_fused_kernels": False,  # 禁用融合内核
                 "entropy_from_logits_with_chunking": False,
                 "use_torch_compile": False,
                 "entropy_checkpointing": False,
-                "grad_clip": 1.0,
+                "grad_clip": 1.0,  # 梯度裁剪，即使ref不优化也需要
                 "fsdp_config": {
                     "_target_": "verl.workers.config.FSDPEngineConfig",
                     "fsdp_size": gpus, 
                     "param_offload": True, 
                     "optimizer_offload": True,
-                    "forward_prefetch": False, 
+                    "forward_prefetch": False,  # 🔥 禁用前向预取以节省内存
                     "offload_policy": False,
                     "reshard_after_forward": True,
                     "wrap_policy": {"min_num_params": 0}
@@ -776,6 +820,31 @@ def train_llmsr_grpo_v2(
     # 🔥 物理一致性奖励开关（默认关闭）
     enable_physics_reward: bool = False,  # 是否启用物理一致性奖励
 ) -> None:
+    # 🔥 修复输出目录命名，使其与v1版本一致包含时间戳
+    import time
+    from datetime import datetime
+    
+    # 从data_path提取问题名称
+    problem_name = "unknown"
+    if "oscillator1" in data_path:
+        problem_name = "oscillator1"
+    elif "oscillator2" in data_path:
+        problem_name = "oscillator2"
+    elif "bactgrow" in data_path:
+        problem_name = "bactgrow"
+    elif "stressstrain" in data_path:
+        problem_name = "stressstrain"
+    
+    # 生成时间戳
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 🔥 使用与v1一致的命名格式：{problem}_qwen8b_v2_{timestamp}
+    if output_dir.endswith("_v2") or output_dir.endswith("/oscillator1_v2"):
+        # 如果传入的是简单的v2目录，则生成完整的带时间戳的目录名
+        base_dir = os.path.dirname(output_dir) if "/" in output_dir else "./llmsr_grpo_outputs"
+        output_dir = os.path.join(base_dir, f"{problem_name}_qwen8b_v2_{timestamp}")
+        print(f"🔥 V2输出目录已更新为: {output_dir}")
+    
     os.makedirs(output_dir, exist_ok=True)
     memory_dir = os.path.join(output_dir, "memory_v2")
     os.makedirs(memory_dir, exist_ok=True)
@@ -847,7 +916,8 @@ def train_llmsr_grpo_v2(
                     except Exception:
                         continue
                     r = rec.get("reward")
-                    m = rec.get("nmse")
+                    # 🔥 优先使用mse，如果没有则使用nmse（兼容v1和v2格式）
+                    m = rec.get("mse") or rec.get("nmse")
                     if isinstance(r, (int, float)) and (best_reward is None or r > best_reward):
                         best_reward = r
                         best_reward_rec = rec
