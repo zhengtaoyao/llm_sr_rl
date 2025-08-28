@@ -34,6 +34,9 @@ FEW_SHOT_K=${FEW_SHOT_K:-3}
 NUM_ISLANDS=${NUM_ISLANDS:-4}           # 群岛数量（默认4个）
 TOP_K_PER_ISLAND=${TOP_K_PER_ISLAND:-8} # 每个岛屿保存的top样本数（默认8个）
 
+# 🔥 过程奖励开关（默认开启）
+ENABLE_PROCESS_REWARD=${ENABLE_PROCESS_REWARD:-1}  # 1=开启真过程奖励，0=使用占位式奖励
+
 LOG_DIR=${LOG_DIR:-"./llmsr_logs"}
 # 若同名文件已存在且不是目录，则使用备用目录
 if [[ -e "$LOG_DIR" && ! -d "$LOG_DIR" ]]; then
@@ -113,6 +116,12 @@ echo -e "${GREEN}🏝️  群岛机制配置:${NC}"
 echo -e "  群岛数量: ${YELLOW}$NUM_ISLANDS${NC} 个"
 echo -e "  每岛top样本: ${YELLOW}$TOP_K_PER_ISLAND${NC} 个"
 echo -e "  Few-shot样本数: ${YELLOW}$FEW_SHOT_K${NC} 个"
+echo -e "${GREEN}🔬 过程奖励配置:${NC}"
+if [[ "$ENABLE_PROCESS_REWARD" == "1" ]]; then
+    echo -e "  过程奖励: ${YELLOW}启用真过程奖励（收敛检查）${NC}"
+else
+    echo -e "  过程奖励: ${YELLOW}占位式奖励（MSE阈值）${NC}"
+fi
 echo -e "  输出目录: ${YELLOW}$OUT_DIR${NC}"
 echo -e "  训练模式: ${YELLOW}🔥 v2模式 - 群岛Few-shot + 大Token支持${NC}"
 
@@ -174,6 +183,13 @@ CMD=(
 # 添加网格训练参数（如果启用）
 if [[ "$GRID_TRAIN" == "1" ]]; then
   CMD+=(--grid_train_data --num_grid_groups "$NUM_GROUPS")
+fi
+
+# 添加过程奖励参数（根据开关值）
+if [[ "$ENABLE_PROCESS_REWARD" == "1" ]]; then
+  CMD+=(--enable_process_reward)
+else
+  CMD+=(--no-enable_process_reward)
 fi
 
 echo -e "${BLUE}[NOHUP] ${CMD[*]}${NC}"

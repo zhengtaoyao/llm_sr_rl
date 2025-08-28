@@ -295,6 +295,7 @@ def create_llmsr_reward_file_v2(
     parse_bonus: float = 0.1,
     invalid_penalty: float = -0.5,
     enable_physics_reward: bool = False,
+    enable_process_reward: bool = True,  # 🔥 新增过程奖励开关
     # 🏝️ 群岛机制超参数
     num_islands: int = 4,           # 群岛数量
     top_k_per_island: int = 8,      # 每个岛屿保存的top样本数
@@ -325,6 +326,7 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         parse_bonus={parse_bonus},
         invalid_penalty={invalid_penalty},
         enable_physics_reward={enable_physics_reward},
+        enable_process_reward={enable_process_reward},
         num_islands={num_islands},
         top_k_per_island={top_k_per_island},
         **kwargs
@@ -875,6 +877,8 @@ def train_llmsr_grpo_v2(
     invalid_penalty: float = -0.5,       # 无效样本惩罚
     # 🔥 物理一致性奖励开关（默认关闭）
     enable_physics_reward: bool = False,  # 是否启用物理一致性奖励
+    # 🔥 过程奖励开关（默认开启）
+    enable_process_reward: bool = True,   # 是否启用真过程奖励
 ) -> None:
     # 🔥 修复输出目录命名，使其与v1版本一致包含时间戳
     import time
@@ -929,6 +933,7 @@ def train_llmsr_grpo_v2(
         parse_bonus=parse_bonus,
         invalid_penalty=invalid_penalty,
         enable_physics_reward=enable_physics_reward,
+        enable_process_reward=enable_process_reward,
         num_islands=num_islands,
         top_k_per_island=top_k_per_island,
     )

@@ -42,6 +42,9 @@ def compute_score(
     invalid_penalty=-0.5,       # 无效样本惩罚
     # 🔥 物理一致性奖励开关（默认关闭）
     enable_physics_reward=False,  # 是否启用物理一致性奖励
+    # 🔥 过程奖励系统开关和参数
+    enable_process_reward=True,  # 是否启用真过程奖励（默认开启）
+    process_reward_weights=None, # 过程奖励各成分权重，None则使用默认值
     # 🏝️ 群岛机制超参数
     num_islands=4,              # 群岛数量
     top_k_per_island=8,         # 每个岛屿保存的top样本数
@@ -159,8 +162,9 @@ def compute_score(
         edit_mode = False
         
         # 🔥 使用新的方法：直接执行Python函数
-        base_reward, execution_success, mse, complexity, params_used = evaluate_single_solution_v2_fixed(
-            code, inputs, outputs, var_names, lambda_nmse, lambda_simp, w_fit, w_simp, w_phys, w_proc, enable_physics_reward
+        base_reward, execution_success, mse, complexity, params_used, opt_info = evaluate_single_solution_v2_fixed(
+            code, inputs, outputs, var_names, lambda_nmse, lambda_simp, w_fit, w_simp, w_phys, w_proc, 
+            enable_physics_reward, enable_process_reward, process_reward_weights
         )
         
         # 🔥 计算长度惩罚：reward := base_reward - α·(len_tokens/1k)
@@ -208,6 +212,22 @@ def compute_score(
                     "ast_ok": execution_success,
                     "data_path": data_path,
                 }
+                
+                # 🔥 添加过程奖励详情（如果可用）
+                if enable_process_reward and opt_info is not None:
+                    rec["process_reward_details"] = {
+                        "optimizer_success": opt_info.get('success', False),
+                        "iterations": opt_info.get('nit', 0),
+                        "initial_loss": opt_info.get('initial_loss'),
+                        "final_loss": opt_info.get('final_loss'),
+                        "improvement": opt_info.get('improvement'),
+                        "grad_norm": opt_info.get('grad_norm'),
+                        "params_norm": opt_info.get('params_norm'),
+                        "has_nan_inf": opt_info.get('has_nan_inf', False),
+                        "enabled": True
+                    }
+                else:
+                    rec["process_reward_details"] = {"enabled": False}
                 with open(jsonl_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             except Exception as e:
@@ -265,13 +285,15 @@ def evaluate_single_solution_v2_fixed(
     w_simp: float = 0.2,
     w_phys: float = 0.15,
     w_proc: float = 0.05,
-    enable_physics_reward: bool = False
+    enable_physics_reward: bool = False,
+    enable_process_reward: bool = True,
+    process_reward_weights: dict = None
 ):
     """
     🔥 V2修复版：使用无RL版本的方法直接执行Python函数 + 多成分奖励
     
     Returns:
-        reward, execution_success, mse, complexity, params_used
+        reward, execution_success, mse, complexity, params_used, opt_info
     """
     
     try:
@@ -280,7 +302,7 @@ def evaluate_single_solution_v2_fixed(
         
         if not function_body:
             print(f"❌ V2函数体提取失败")
-            return -1.0, False, 1e6, 0.0, None
+            return -1.0, False, 1e6, 0.0, None, None
         
         print(f"✅ V2成功提取函数体，长度: {len(function_body)}")
         
@@ -288,10 +310,10 @@ def evaluate_single_solution_v2_fixed(
         program = build_executable_program_v2(function_body, var_names)
         
         # 🔥 步骤3：在安全环境中执行程序并计算MSE
-        mse, params_used = execute_and_compute_mse_v2(program, inputs, outputs, var_names)
+        mse, params_used, opt_info = execute_and_compute_mse_v2(program, inputs, outputs, var_names)
         
         if mse >= 1e6:
-            return -1.0, False, mse, 0.0, params_used
+            return -1.0, False, mse, 0.0, params_used, opt_info
         
         # 计算NMSE
         var_y = float(np.var(outputs) + 1e-9)
@@ -311,19 +333,26 @@ def evaluate_single_solution_v2_fixed(
             r_phys = 1.0  # 默认不惩罚
             w_phys = 0.0  # 权重设为0，不影响总奖励
         
-        # 过程奖励（简化版）
-        r_proc = 0.5 if mse < 1.0 else 0.0
+        # 🔥 过程奖励：真正的过程监督 vs 占位式
+        if enable_process_reward and opt_info is not None:
+            # 真正的过程奖励：基于优化器状态
+            r_proc = _compute_true_process_reward(
+                opt_info, mse, nmse, complexity, process_reward_weights
+            )
+        else:
+            # 占位式过程奖励（向后兼容）
+            r_proc = 0.5 if mse < 1.0 else 0.0
         
         # 综合奖励
         reward = w_fit * r_fit + w_simp * r_simp + w_phys * r_phys + w_proc * r_proc
         
         print(f"✅ V2计算完成 - MSE: {mse:.6f}, 奖励: {reward:.6f}")
         
-        return reward, True, mse, complexity, params_used
+        return reward, True, mse, complexity, params_used, opt_info
         
     except Exception as e:
         print(f"❌ V2执行Python函数时出错: {e}")
-        return -1.0, False, 1e6, 0.0, None
+        return -1.0, False, 1e6, 0.0, None, None
 
 
 class _FunctionLineVisitorV2(ast.NodeVisitor):
@@ -582,18 +611,21 @@ def build_executable_program_v2(function_body: str, var_names: list) -> str:
     # 构建函数签名
     params_str = ', '.join(var_names) + ', params'
     
-    # 构建完整的程序
-    program = f"""
+    # 🔥 使用字符串拼接而不是f-string，避免格式化问题
+    program_template = """
 import numpy as np
 import math
 from scipy.optimize import minimize
 
-def equation({params_str}):
-{function_body}
+def equation(PARAMS_PLACEHOLDER):
+FUNCTION_BODY_PLACEHOLDER
 
 def evaluate_function(inputs, outputs, var_names):
-    \"\"\"V2版本：评估函数性能 - 使用BFGS优化参数\"\"\"
+    '''V2版本：评估函数性能 - 使用BFGS优化参数，返回详细优化信息'''
     try:
+        # 记录初始MSE（用随机参数）
+        initial_params = np.ones(10)
+        
         def loss_function(params):
             try:
                 # 🔥 按照无RL版本的方式，直接传递整个数组
@@ -630,32 +662,53 @@ def evaluate_function(inputs, outputs, var_names):
             except Exception as e:
                 return 1e6
         
+        # 计算初始损失
+        initial_loss = loss_function(initial_params)
+        
         # 🔥 BFGS参数优化（模仿无RL版本）
-        initial_params = np.ones(10)
-        result = minimize(loss_function, initial_params, method='BFGS')
+        result = minimize(loss_function, initial_params, method='BFGS', options={'maxiter': 100})
         
         # 获取优化后的参数和损失
         optimized_params = result.x
         optimized_loss = result.fun
         
+        # 构建优化信息字典
+        opt_info = {
+            'success': result.success,
+            'nit': result.nit,  # 迭代次数
+            'initial_loss': float(initial_loss),
+            'final_loss': float(optimized_loss),
+            'improvement': float((initial_loss - optimized_loss) / (initial_loss + 1e-9)),
+            'message': result.message if hasattr(result, 'message') else '',
+            'grad_norm': float(np.linalg.norm(result.jac)) if hasattr(result, 'jac') and result.jac is not None else None,
+            'params_norm': float(np.linalg.norm(optimized_params)),
+            'has_nan_inf': bool(np.any(np.isnan(optimized_params)) or np.any(np.isinf(optimized_params)))
+        }
+        
         # 处理优化失败的情况
         if np.isnan(optimized_loss) or np.isinf(optimized_loss) or not result.success:
-            print(f"⚠️ V2 BFGS优化失败，使用默认参数")
+            print("⚠️ V2 BFGS优化失败，使用默认参数")
             optimized_params = initial_params
             optimized_loss = loss_function(initial_params)
+            opt_info['success'] = False
+            opt_info['final_loss'] = float(optimized_loss)
         
-        return float(optimized_loss), optimized_params
+        return float(optimized_loss), optimized_params, opt_info
         
     except Exception as e:
-        print(f"❌ V2函数执行错误: {{e}}")
-        return 1e6, np.ones(10)
+        print("❌ V2函数执行错误: " + str(e))
+        return 1e6, np.ones(10), None
 """
+    
+    # 安全替换占位符
+    program = program_template.replace("PARAMS_PLACEHOLDER", params_str)
+    program = program.replace("FUNCTION_BODY_PLACEHOLDER", function_body)
     
     return program
 
 
-def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray]:
-    """V2版本：在安全环境中执行程序并计算MSE"""
+def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray, dict]:
+    """V2版本：在安全环境中执行程序并计算MSE，返回优化信息"""
     
     try:
         # 执行程序
@@ -665,20 +718,36 @@ def execute_and_compute_mse_v2(program: str, inputs: np.ndarray, outputs: np.nda
             'math': math
         }
         
+        # 添加scipy.optimize.minimize到命名空间
+        from scipy.optimize import minimize
+        all_globals_namespace['minimize'] = minimize
+        
         # 执行程序
         exec(program, all_globals_namespace)
         
         # 获取评估函数
         evaluate_function = all_globals_namespace['evaluate_function']
         
-        # 调用评估函数
-        mse, params_used = evaluate_function(inputs, outputs, var_names)
+        # 调用评估函数（现在返回3个值）
+        result = evaluate_function(inputs, outputs, var_names)
         
-        return mse, params_used
+        # 处理返回值
+        if isinstance(result, tuple) and len(result) == 3:
+            mse, params_used, opt_info = result
+        elif isinstance(result, tuple) and len(result) == 2:
+            # 向后兼容：如果只返回2个值
+            mse, params_used = result
+            opt_info = None
+        else:
+            mse = 1e6
+            params_used = None
+            opt_info = None
+        
+        return mse, params_used, opt_info
         
     except Exception as e:
         print(f"❌ V2程序执行失败: {e}")
-        return 1e6, None
+        return 1e6, None, None
 
 
 def load_training_data_v1(problem_type):
@@ -963,6 +1032,118 @@ def _estimate_poly_terms(subtree_counter) -> int:
     # 统计出现 "Add:" 的子树个数作为项分裂的粗略度量
     terms = sum(1 for k in subtree_counter if k.startswith("BinOp:") and "Add" in k)
     return max(0, terms)
+
+
+def _compute_true_process_reward(
+    opt_info: dict, 
+    mse: float, 
+    nmse: float, 
+    complexity: float,
+    process_reward_weights: dict = None
+) -> float:
+    """
+    🔥 计算真正的过程奖励（基于优化器状态和执行过程）
+    
+    包含以下成分：
+    1. 收敛指示 (r_conv): 优化器是否成功收敛
+    2. 改进幅度 (r_impr): 从初始到最终的改进程度
+    3. 迭代效率 (r_eff): 收敛速度
+    4. 数值健康 (r_num): 无NaN/Inf、参数合理
+    5. 约束满足 (r_cons): MSE阈值等约束
+    """
+    
+    # 默认权重
+    if process_reward_weights is None:
+        process_reward_weights = {
+            'conv': 0.3,   # 收敛指示权重
+            'impr': 0.25,  # 改进幅度权重
+            'eff': 0.15,   # 迭代效率权重
+            'num': 0.2,    # 数值健康权重
+            'cons': 0.1    # 约束满足权重
+        }
+    
+    # 1. 收敛指示奖励
+    if opt_info.get('success', False):
+        r_conv = 1.0
+    else:
+        # 使用sigmoid平滑，基于梯度范数
+        grad_norm = opt_info.get('grad_norm', 1e3)
+        if grad_norm is not None and np.isfinite(grad_norm):
+            # sigmoid(-grad_norm/scale), scale=10使得grad_norm=10时约0.27
+            r_conv = 1.0 / (1.0 + np.exp(grad_norm / 10.0))
+        else:
+            r_conv = 0.0
+    
+    # 2. 改进幅度奖励
+    initial_loss = opt_info.get('initial_loss', 1e6)
+    final_loss = opt_info.get('final_loss', 1e6)
+    
+    if initial_loss > 0 and final_loss > 0 and initial_loss >= final_loss:
+        # log-scale improvement reward
+        improvement_ratio = (initial_loss + 1e-9) / (final_loss + 1e-9)
+        r_impr = np.clip(np.log(improvement_ratio) / 5.0, 0.0, 1.0)  # log(148)≈5 maps to 1.0
+    else:
+        r_impr = 0.0
+    
+    # 3. 迭代效率奖励
+    nit = opt_info.get('nit', 100)
+    max_iter = 100  # BFGS默认最大迭代
+    r_eff = 1.0 - min(1.0, nit / max_iter)
+    
+    # 4. 数值健康奖励
+    has_nan_inf = opt_info.get('has_nan_inf', False)
+    params_norm = opt_info.get('params_norm', 0.0)
+    
+    # 基础健康分
+    r_num_base = 0.0 if has_nan_inf else 1.0
+    
+    # 参数范数惩罚（过大的参数通常不稳定）
+    if params_norm > 0:
+        # 参数范数在10以内给满分，超过100降到0.5
+        r_num_norm = 1.0 / (1.0 + (params_norm / 50.0) ** 2)
+    else:
+        r_num_norm = 1.0
+    
+    r_num = 0.7 * r_num_base + 0.3 * r_num_norm
+    
+    # 5. 约束满足奖励
+    # MSE阈值约束
+    if mse < 0.1:
+        r_cons_mse = 1.0
+    elif mse < 1.0:
+        r_cons_mse = 0.8
+    elif mse < 10.0:
+        r_cons_mse = 0.5
+    else:
+        r_cons_mse = 0.0
+    
+    # 复杂度约束（鼓励简单解）
+    if complexity < 5.0:
+        r_cons_comp = 1.0
+    elif complexity < 10.0:
+        r_cons_comp = 0.7
+    elif complexity < 20.0:
+        r_cons_comp = 0.4
+    else:
+        r_cons_comp = 0.1
+    
+    r_cons = 0.6 * r_cons_mse + 0.4 * r_cons_comp
+    
+    # 综合过程奖励
+    r_proc = (
+        process_reward_weights['conv'] * r_conv +
+        process_reward_weights['impr'] * r_impr +
+        process_reward_weights['eff'] * r_eff +
+        process_reward_weights['num'] * r_num +
+        process_reward_weights['cons'] * r_cons
+    )
+    
+    # 打印详细信息（调试用）
+    print(f"🔬 过程奖励详情: conv={r_conv:.3f}, impr={r_impr:.3f}, "
+          f"eff={r_eff:.3f}, num={r_num:.3f}, cons={r_cons:.3f}, "
+          f"总计={r_proc:.3f}")
+    
+    return float(r_proc)
 
 
 def _physical_consistency_v2(function_body: str, var_names: List[str], X: np.ndarray, y: np.ndarray) -> float:
