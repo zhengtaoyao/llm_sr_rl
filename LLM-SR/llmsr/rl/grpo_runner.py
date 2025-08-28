@@ -1571,9 +1571,9 @@ def train_llmsr_grpo_direct(
     try:
         import json
         best_reward = None
-        best_mse = None
+        best_nmse = None
         best_reward_rec = None
-        best_mse_rec = None
+        best_nmse_rec = None
         jsonl_path = os.path.join(output_dir, "sample.jsonl")
         if os.path.exists(jsonl_path):
             with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -1590,15 +1590,15 @@ def train_llmsr_grpo_direct(
                     if isinstance(r, (int, float)) and (best_reward is None or r > best_reward):
                         best_reward = r
                         best_reward_rec = rec
-                    if isinstance(m, (int, float)) and (best_mse is None or m < best_mse):
-                        best_mse = m
-                        best_mse_rec = rec
+                    if isinstance(m, (int, float)) and (best_nmse is None or m < best_nmse):
+                        best_nmse = m
+                        best_nmse_rec = rec
         if best_reward_rec:
             with open(os.path.join(output_dir, "best_reward.json"), "w", encoding="utf-8") as f:
                 json.dump(best_reward_rec, f, ensure_ascii=False, indent=2)
-        if best_mse_rec:
-            with open(os.path.join(output_dir, "best_mse.json"), "w", encoding="utf-8") as f:
-                json.dump(best_mse_rec, f, ensure_ascii=False, indent=2)
+        if best_nmse_rec:
+            with open(os.path.join(output_dir, "best_nmse.json"), "w", encoding="utf-8") as f:
+                json.dump(best_nmse_rec, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 

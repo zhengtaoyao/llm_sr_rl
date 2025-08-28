@@ -1,0 +1,63 @@
+{
+  "mode": "jsonl",
+  "evaluation_info": {
+    "problem_type": "oscillator1",
+    "input_path": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr_grpo_outputs/oscillator1_qwen8b_direct_20250824_194154/sample.jsonl",
+    "total_samples": 10,
+    "valid_samples": 9,
+    "data_dir": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/data/oscillator1",
+    "timestamp": "2025-08-28T21:04:45.561925"
+  },
+  "best_test_id_sample": {
+    "solution_length": 22638,
+    "timestamp": 1756036007.6113727,
+    "execution_success": true,
+    "function_body": "    \"\"\"\n    Mathematical function skeleton for acceleration in a damped nonlinear oscillator\n    with a driving force.\n    \n    Parameters:\n    - x: Array of positions\n    - v: Array of velocities\n    - params: Array of parameters [gamma, omega0^2, F_drive, alpha, beta, gamma_cross, ...]\n    \n    Returns:\n    - Acceleration array (a = -gamma * v - omega0^2 * x + F_drive + alpha * x^3 + beta * v^2 + gamma_cross * x * v)\n    \"\"\"\n    # Extract parameters\n    gamma = params[0]     # Damping coefficient\n    omega_sq = params[1]  # Stiffness coefficient (omega_0^2)\n    F_drive = params[2]   # Driving force constant\n    alpha = params[3]     # Nonlinear x^3 term\n    beta = params[4]      # Nonlinear v^2 term\n    gamma_cross = params[5]  # Cross term x * v\n    \n    # Compute acceleration\n    a = -gamma * v - omega_sq * x + F_drive + alpha * x**3 + beta * v**2 + gamma_cross * x * v\n    \n    return a\n\n",
+    "params": [
+      0.016244236018566758,
+      0.19862585795154772,
+      0.0006167943780317204,
+      0.15298985872072451,
+      -0.06770260940556791,
+      -0.5021058552376435,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mse": 9.686435539737277e-07,
+    "reward": -9.686435539737277e-07,
+    "error": null,
+    "sample_index": 8,
+    "test_id_mse": 9.6866568854337e-07,
+    "test_id_nmse": 0.00022202169919321066,
+    "test_ood_mse": 0.0002624206211478882,
+    "test_ood_nmse": 0.03453726796918197
+  },
+  "best_test_ood_sample": {
+    "solution_length": 22638,
+    "timestamp": 1756036007.6113727,
+    "execution_success": true,
+    "function_body": "    \"\"\"\n    Mathematical function skeleton for acceleration in a damped nonlinear oscillator\n    with a driving force.\n    \n    Parameters:\n    - x: Array of positions\n    - v: Array of velocities\n    - params: Array of parameters [gamma, omega0^2, F_drive, alpha, beta, gamma_cross, ...]\n    \n    Returns:\n    - Acceleration array (a = -gamma * v - omega0^2 * x + F_drive + alpha * x^3 + beta * v^2 + gamma_cross * x * v)\n    \"\"\"\n    # Extract parameters\n    gamma = params[0]     # Damping coefficient\n    omega_sq = params[1]  # Stiffness coefficient (omega_0^2)\n    F_drive = params[2]   # Driving force constant\n    alpha = params[3]     # Nonlinear x^3 term\n    beta = params[4]      # Nonlinear v^2 term\n    gamma_cross = params[5]  # Cross term x * v\n    \n    # Compute acceleration\n    a = -gamma * v - omega_sq * x + F_drive + alpha * x**3 + beta * v**2 + gamma_cross * x * v\n    \n    return a\n\n",
+    "params": [
+      0.016244236018566758,
+      0.19862585795154772,
+      0.0006167943780317204,
+      0.15298985872072451,
+      -0.06770260940556791,
+      -0.5021058552376435,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mse": 9.686435539737277e-07,
+    "reward": -9.686435539737277e-07,
+    "error": null,
+    "sample_index": 8,
+    "test_id_mse": 9.6866568854337e-07,
+    "test_id_nmse": 0.00022202169919321066,
+    "test_ood_mse": 0.0002624206211478882,
+    "test_ood_nmse": 0.03453726796918197
+  }
+}

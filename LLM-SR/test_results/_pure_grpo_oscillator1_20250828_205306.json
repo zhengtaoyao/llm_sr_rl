@@ -1,0 +1,37 @@
+{
+  "mode": "json",
+  "evaluation_info": {
+    "problem_type": "oscillator1",
+    "input_path": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr_grpo_outputs/oscillator1_qwen8b_direct_20250824_194154/best.json",
+    "data_dir": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/data/oscillator1",
+    "timestamp": "2025-08-28T20:53:06.691015"
+  },
+  "sample_evaluation": {
+    "test_id_nmse": 1.59600899175922e-06,
+    "test_ood_nmse": 0.03368189331976386,
+    "test_id_mse": 6.963279510704378e-09,
+    "test_ood_mse": 0.000255921324590478,
+    "execution_success": true
+  },
+  "original_sample": {
+    "solution_length": 16305,
+    "timestamp": 1756041950.9082117,
+    "execution_success": true,
+    "function_body": "    # Damping term (quadratic in velocity)\n    damping = -params[0] * v ** 2\n    \n    # Nonlinear restoring force (cubic in position)\n    restoring = -params[1] * x ** 3\n    \n    # Driving force (sinusoidal in x and v)\n    driving = params[2] * np.sin(params[3] * x) + params[4] * np.cos(params[5] * v)\n    \n    # Additional nonlinear terms for system complexity\n    nonlinear_terms = params[6] * x * v + params[7] * x ** 2 + params[8] * v ** 3\n    \n    # Total acceleration\n    a = damping + restoring + driving + nonlinear_terms\n    return a\n\n",
+    "params": [
+      -0.009007811484970651,
+      -0.14108073440633925,
+      -0.32435940208978603,
+      0.6132513881953681,
+      -0.0003957698426285874,
+      1.0180322646540816,
+      -0.49988924760858044,
+      0.0014740426828819607,
+      -0.5155886925426186,
+      1.0
+    ],
+    "mse": 6.963216438415695e-09,
+    "reward": -6.963216438415695e-09,
+    "error": null
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "mode": "best_from_jsonl",
+  "evaluation_info": {
+    "problem_type": "oscillator1",
+    "input_path": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr_grpo_outputs/oscillator1_qwen8b_v2_20250827_221113/sample.jsonl",
+    "total_samples": 50,
+    "selected_sample_index": 13,
+    "train_nmse": 3.282959692580276e-06,
+    "data_dir": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/data/oscillator1",
+    "timestamp": "2025-08-28T21:12:30.287729"
+  },
+  "sample_evaluation": {
+    "test_id_nmse": 3.2832587774776976e-06,
+    "test_ood_nmse": 0.03702555889486516,
+    "test_id_mse": 1.4324636447286283e-08,
+    "test_ood_mse": 0.0002813271209583856,
+    "train_nmse": 3.282959692580276e-06,
+    "execution_success": true
+  },
+  "selected_sample": {
+    "solution_length": 16649,
+    "timestamp": 1756304175.4156904,
+    "execution_success": true,
+    "function_body": "    return (\n    params[0] * x\n    + params[1] * v\n    + params[2] * x**2\n    + params[3] * v**2\n    + params[4] * x**3\n    + params[5] * v**3\n    + params[6] * x * v\n    + params[7] * np.sin(params[8] * x + params[9] * v)\n    )\n\n",
+    "params": [
+      -0.08852257884323428,
+      0.26081082117437143,
+      0.00020228010213257155,
+      -0.0036159916317892006,
+      0.15465815165668703,
+      -0.4746842400261372,
+      -0.5007320186603923,
+      -0.41084676975093387,
+      0.27080140112476814,
+      0.6402842783633559
+    ],
+    "mse": 1.4324372938251693e-08,
+    "reward": 0.5969407848678537,
+    "error": null,
+    "base_reward": 0.6263607848678537,
+    "length_penalty": 0.12942,
+    "parse_reward": 0.1,
+    "len_tokens": 4314,
+    "nmse": 3.282959692580276e-06,
+    "complexity": 49.85922560098346,
+    "r_fit": null,
+    "r_simp": null,
+    "r_phys": null,
+    "r_proc": null,
+    "edit_mode": false,
+    "ast_ok": true,
+    "data_path": "./data/oscillator1/train.csv",
+    "sample_index": 13
+  }
+}

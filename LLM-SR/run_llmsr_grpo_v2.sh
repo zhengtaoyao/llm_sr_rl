@@ -21,9 +21,9 @@ ROLLOUT_N=${ROLLOUT_N:-4}
 KL_COEF=${KL_COEF:-1e-3}
 
 # 🔥 大token长度配置 - 基于46GB/81GB显存使用情况优化（v2增强版）
-MAX_PROMPT_LEN=${MAX_PROMPT_LEN:-4096}      # 提示长度：4K tokens
-MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-8192}      # 生成长度：8K tokens  
-MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}       # 模型最大长度：16K tokens
+MAX_PROMPT_LEN=${MAX_PROMPT_LEN:-5120}      # 提示长度：4K tokens
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-16384}      # 生成长度：8K tokens  
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-20000}       # 模型最大长度：20K tokens
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}  # 批量token数：8K
 
 GRID_TRAIN=${GRID_TRAIN:-0}

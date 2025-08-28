@@ -199,7 +199,7 @@ def evaluate_single_solution_fixed(solution_str: str, inputs: np.ndarray, output
         "execution_success": False,
         "function_body": "",
         "params": None,  # 将记录params数组的具体数值列表
-        "mse": float('inf'),
+        "nmse": float('inf'),
         "reward": 0.0,
         "error": None
     }
@@ -220,20 +220,20 @@ def evaluate_single_solution_fixed(solution_str: str, inputs: np.ndarray, output
         # 🔥 步骤2：构建完整的可执行程序（模仿evaluator.py的_sample_to_program）
         program = build_executable_program(function_body, var_names)
         
-        # 🔥 步骤3：在安全环境中执行程序并计算MSE
-        mse, params_used = execute_and_compute_mse(program, inputs, outputs, var_names)
-        log_info["mse"] = float(mse)
+        # 🔥 步骤3：在安全环境中执行程序并计算NMSE
+        nmse, params_used = execute_and_compute_nmse(program, inputs, outputs, var_names)
+        log_info["nmse"] = float(nmse)
         log_info["params"] = params_used.tolist() if params_used is not None else None
         log_info["execution_success"] = True
         
-        # 返回负MSE作为奖励（MSE越小，奖励越高）
-        reward = -mse
+        # 返回负NMSE作为奖励（NMSE越小，奖励越高）
+        reward = -nmse
         
         # 限制奖励范围，避免数值不稳定
         reward = max(min(reward, 10.0), -100.0)
         log_info["reward"] = float(reward)
         
-        print(f"✅ 计算完成 - MSE: {mse:.6f}, 奖励: {reward:.6f}")
+        print(f"✅ 计算完成 - NMSE: {nmse:.6f}, 奖励: {reward:.6f}")
         
         # 记录成功的评估
         _log_to_jsonl(log_info)
@@ -370,7 +370,7 @@ def equation({params_str}):
 {function_body}
 
 def evaluate_function(inputs, outputs, var_names):
-    \"\"\"评估函数性能 - 使用BFGS优化参数\"\"\"
+    \"\"\"评估函数性能 - 使用BFGS优化参数，返回NMSE\"\"\"
     try:
         def loss_function(params):
             try:
@@ -401,9 +401,11 @@ def evaluate_function(inputs, outputs, var_names):
                 if predictions.ndim == 0:
                     predictions = np.full_like(outputs, float(predictions))
                 
-                # 计算MSE
+                # 计算NMSE
                 mse = np.mean((predictions - outputs) ** 2)
-                return float(mse) if np.isfinite(mse) else 1e6
+                var_y = np.var(outputs) + 1e-12  # 避免除零
+                nmse = mse / var_y
+                return float(nmse) if np.isfinite(nmse) else 1e6
                 
             except Exception as e:
                 return 1e6
@@ -412,17 +414,17 @@ def evaluate_function(inputs, outputs, var_names):
         initial_params = np.ones(10)
         result = minimize(loss_function, initial_params, method='BFGS')
         
-        # 获取优化后的参数和损失
+        # 获取优化后的参数和NMSE损失
         optimized_params = result.x
-        optimized_loss = result.fun
+        optimized_nmse = result.fun
         
         # 处理优化失败的情况
-        if np.isnan(optimized_loss) or np.isinf(optimized_loss) or not result.success:
+        if np.isnan(optimized_nmse) or np.isinf(optimized_nmse) or not result.success:
             print(f"⚠️ BFGS优化失败，使用默认参数")
             optimized_params = initial_params
-            optimized_loss = loss_function(initial_params)
+            optimized_nmse = loss_function(initial_params)
         
-        return float(optimized_loss), optimized_params
+        return float(optimized_nmse), optimized_params
         
     except Exception as e:
         print(f"❌ 函数执行错误: {{e}}")
@@ -432,9 +434,9 @@ def evaluate_function(inputs, outputs, var_names):
     return program
 
 
-def execute_and_compute_mse(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray]:
+def execute_and_compute_nmse(program: str, inputs: np.ndarray, outputs: np.ndarray, var_names: list) -> tuple[float, np.ndarray]:
     """
-    在安全环境中执行程序并计算MSE，模仿evaluator.py的执行逻辑
+    在安全环境中执行程序并计算NMSE，模仿evaluator.py的执行逻辑
     """
     
     try:
@@ -452,9 +454,9 @@ def execute_and_compute_mse(program: str, inputs: np.ndarray, outputs: np.ndarra
         evaluate_function = all_globals_namespace['evaluate_function']
         
         # 调用评估函数
-        mse, params_used = evaluate_function(inputs, outputs, var_names)
+        nmse, params_used = evaluate_function(inputs, outputs, var_names)
         
-        return mse, params_used
+        return nmse, params_used
         
     except Exception as e:
         print(f"❌ 程序执行失败: {e}")

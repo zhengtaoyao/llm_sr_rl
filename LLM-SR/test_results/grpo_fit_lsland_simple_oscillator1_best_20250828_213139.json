@@ -1,0 +1,55 @@
+{
+  "mode": "best_from_jsonl",
+  "evaluation_info": {
+    "problem_type": "oscillator1",
+    "input_path": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr_grpo_outputs/oscillator1_qwen8b_v2_20250828_103902/sample.jsonl",
+    "total_samples": 3840,
+    "selected_sample_index": 3192,
+    "train_nmse": 8.911360069898027e-08,
+    "data_dir": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/data/oscillator1",
+    "timestamp": "2025-08-28T21:31:40.279326"
+  },
+  "sample_evaluation": {
+    "test_id_nmse": 8.913663695147672e-08,
+    "test_ood_nmse": 0.00016683743325881882,
+    "test_id_mse": 3.8889713086964316e-10,
+    "test_ood_mse": 1.2676620196352945e-06,
+    "train_nmse": 8.911360069898027e-08,
+    "execution_success": true
+  },
+  "selected_sample": {
+    "solution_length": 11875,
+    "timestamp": 1756358811.816676,
+    "execution_success": true,
+    "function_body": "    return -params[0]*x**2 - params[1]*v**3 + params[2]*np.sin(params[3]*x) + params[4]*np.cos(params[5]*v) + params[6]*x*v\n\n",
+    "params": [
+      4.824840840768952e-05,
+      0.4993957273855508,
+      -0.08884425830766256,
+      2.254186800230404,
+      1.0355769567744814e-05,
+      1.0635398742669748,
+      -0.49985517356939024,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mse": 3.8882489272335984e-10,
+    "reward": 0.6397785274376597,
+    "error": null,
+    "base_reward": 0.6310985274376597,
+    "length_penalty": 0.09132,
+    "parse_reward": 0.1,
+    "len_tokens": 3044,
+    "nmse": 8.911360069898027e-08,
+    "complexity": 34.90243726357038,
+    "r_fit": null,
+    "r_simp": null,
+    "r_phys": null,
+    "r_proc": null,
+    "edit_mode": false,
+    "ast_ok": true,
+    "data_path": "./data/oscillator1/train.csv",
+    "sample_index": 3192
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "mode": "jsonl",
+  "evaluation_info": {
+    "problem_type": "oscillator1",
+    "input_path": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/llmsr_grpo_outputs/oscillator1_qwen8b_direct_20250824_194154/sample.jsonl",
+    "total_samples": 1000,
+    "valid_samples": 756,
+    "data_dir": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR/data/oscillator1",
+    "timestamp": "2025-08-28T20:58:10.867529"
+  },
+  "best_test_id_sample": {
+    "solution_length": 13219,
+    "timestamp": 1756036198.3284166,
+    "execution_success": true,
+    "function_body": "    # Damping term: linear in velocity\n    damping = params[0] * v\n    \n    # Stiffness term: linear in position\n    stiffness = params[1] * x\n    \n    # Nonlinear stiffness: e.g., cubic in x\n    nonlinear_stiffness = params[2] * x**3\n    \n    # Nonlinear damping: e.g., cubic in velocity\n    nonlinear_damping = params[3] * v**3\n    \n    # Cross term: interaction between x and v\n    cross_term = params[4] * x * v\n    \n    # Driving force: e.g., sinusoidal in position\n    driving_force = params[5] * np.sin(params[6] * x)\n    \n    # Combine all terms\n    acceleration = -damping - stiffness - nonlinear_stiffness - nonlinear_damping - cross_term + driving_force\n    \n    return acceleration\n\n",
+    "params": [
+      0.0005708130183662494,
+      0.8120066160424817,
+      -0.19274155556377934,
+      0.486989698467887,
+      0.5000884978236408,
+      0.9735715832975853,
+      0.6299535515125237,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mse": 1.0179496426399925e-08,
+    "reward": -1.0179496426399925e-08,
+    "error": null,
+    "sample_index": 124,
+    "test_id_mse": 1.018001857068902e-08,
+    "test_id_nmse": 2.3332972847232434e-06,
+    "test_ood_mse": 0.00023413575466938653,
+    "test_ood_nmse": 0.03081468698919862
+  },
+  "best_test_ood_sample": {
+    "solution_length": 19265,
+    "timestamp": 1756036182.7406216,
+    "execution_success": true,
+    "function_body": "    # Linear damping and restoring terms\n    damping = -params[1] * v\n    restoring = -params[0] * x\n    \n    # Nonlinear damping and restoring terms\n    nonlinear_damping = -params[3] * v**2\n    nonlinear_restoring = -params[2] * x**2\n    \n    # Nonlinear driving force terms\n    driving_sine = params[4] * np.sin(params[5] * x)\n    driving_cosine = params[6] * np.cos(params[7] * v)\n    \n    # Cross term\n    cross_term = params[8] * x * v\n    \n    # Constant driving force\n    constant_drive = params[9]\n    \n    # Total acceleration\n    a = damping + restoring + nonlinear_damping + nonlinear_restoring + driving_sine + driving_cosine + cross_term + constant_drive\n    return a\n\n",
+    "params": [
+      -0.9309172890321814,
+      0.009827686066528583,
+      0.016243176392359553,
+      0.22349136390480973,
+      1.2619665792574781,
+      -0.8946935892076374,
+      -0.2038023695815055,
+      0.8568739664348681,
+      -0.5022123803058174,
+      0.20870794526039582
+    ],
+    "mse": 6.708619274329018e-07,
+    "reward": -6.708619274329018e-07,
+    "error": null,
+    "sample_index": 64,
+    "test_id_mse": 6.710250165684921e-07,
+    "test_id_nmse": 0.00015380137455237077,
+    "test_ood_mse": 3.1837796198002575e-05,
+    "test_ood_nmse": 0.004190183279152209
+  }
+}
