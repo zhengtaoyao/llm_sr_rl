@@ -138,7 +138,7 @@ def compute_score(
         except Exception:
             jsonl_path = None
 
-    # 🔥 初始化memory管理器（用于更新memory）
+    # 🔥 初始化memory管理器（用于更新memory）- V2改进版：自适应分位数
     memory_manager = None
     if memory_dir and os.path.exists(memory_dir):
         try:
@@ -146,8 +146,16 @@ def compute_score(
             import sys
             sys.path.append("/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR")
             from llmsr.rl.grpo_runner_v2 import MemoryManagerV2
-            memory_manager = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
-            print(f"✅ V2 成功初始化memory管理器: {memory_dir} (岛屿:{num_islands}, 每岛top-k:{top_k_per_island})")
+            
+            # 🔥 V2改进版：添加自适应参数
+            memory_manager = MemoryManagerV2(
+                memory_dir, 
+                top_k_per_island=top_k_per_island, 
+                num_islands=num_islands,
+                update_frequency=50,  # 每50个样本更新一次阈值
+                recent_samples_window=200  # 基于最近200个样本计算分位数
+            )
+            print(f"✅ V2 成功初始化自适应memory管理器: {memory_dir} (岛屿:{num_islands}, 每岛top-k:{top_k_per_island}, 自适应更新)")
         except Exception as e:
             print(f"⚠️ V2 memory管理器初始化失败: {e}")
             memory_manager = None
@@ -234,8 +242,8 @@ def compute_score(
                 print(f"⚠️ 记录sample.jsonl失败: {e}")
                 pass
 
-        # 🔥 新增：将优秀样本添加到memory（群岛机制的关键修复！）
-        if memory_manager and execution_success and final_reward > 0.3:  # 过滤低质量样本
+        # 🔥 V2改进版：更合理的进岛门槛 - 允许执行成功的样本都进入，让自适应分位数机制充分发挥
+        if memory_manager and execution_success:  # 只要执行成功就考虑入库
             try:
                 function_body = extract_function_body_v2(code)
                 if function_body:  # 确保函数体不为空

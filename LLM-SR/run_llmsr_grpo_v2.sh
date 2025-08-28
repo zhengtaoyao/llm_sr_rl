@@ -14,8 +14,8 @@ MODEL_PATH=${MODEL_PATH:-"/storage/home/westlakeLab/zhangjunlei/Qwen3-8B"}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUT_DIR=${OUT_DIR:-"./llmsr_grpo_outputs/${PROBLEM_NAME}_qwen8b_v2_${TIMESTAMP}"}
 
-EPOCHS=${EPOCHS:-7}
-BATCH_SIZE=${BATCH_SIZE:-20}   
+EPOCHS=${EPOCHS:-5}
+BATCH_SIZE=${BATCH_SIZE:-14}   
 LR=${LR:-1e-6}
 ROLLOUT_N=${ROLLOUT_N:-4}
 KL_COEF=${KL_COEF:-1e-3}
@@ -35,7 +35,7 @@ NUM_ISLANDS=${NUM_ISLANDS:-4}           # 群岛数量（默认4个）
 TOP_K_PER_ISLAND=${TOP_K_PER_ISLAND:-8} # 每个岛屿保存的top样本数（默认8个）
 
 # 🔥 过程奖励开关（默认开启）
-ENABLE_PROCESS_REWARD=${ENABLE_PROCESS_REWARD:-1}  # 1=开启真过程奖励，0=使用占位式奖励
+ENABLE_PROCESS_REWARD=${ENABLE_PROCESS_REWARD:-0}  # 1=开启真过程奖励，0=使用占位式奖励
 
 LOG_DIR=${LOG_DIR:-"./llmsr_logs"}
 # 若同名文件已存在且不是目录，则使用备用目录

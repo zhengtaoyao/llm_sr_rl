@@ -26,71 +26,233 @@ if verl_path not in sys.path:
 from verl.trainer.main_ppo import run_ppo
 
 
-# 轻量记忆管理（文件共享，跨进程安全）
+# 轻量记忆管理（文件共享，跨进程安全）- V2改进版：自适应分位数分桶
 class MemoryManagerV2:
-    def __init__(self, memory_dir: str, top_k_per_island: int = 8, num_islands: int = 4) -> None:
+    def __init__(self, memory_dir: str, top_k_per_island: int = 8, num_islands: int = 4,
+                 update_frequency: int = 50, recent_samples_window: int = 200) -> None:
         os.makedirs(memory_dir, exist_ok=True)
         self._path = os.path.join(memory_dir, "memory_v2.json")
+        self._history_path = os.path.join(memory_dir, "sample_history.json")  # 🔥 新增：样本历史
         self._top_k = top_k_per_island
         self._num_islands = num_islands
+        self._update_frequency = update_frequency  # 每N次写库后重新计算分位数
+        self._recent_samples_window = recent_samples_window  # 最近M条样本用于计算分位数
+        self._samples_since_update = 0  # 自上次更新后的样本计数
 
         if not os.path.exists(self._path):
             # 初始化空结构
             import json
-            init = {str(i): [] for i in range(self._num_islands)}
+            init = {
+                "islands": {str(i): [] for i in range(self._num_islands)},
+                "adaptive_thresholds": None,  # 🔥 自适应阈值，初始为None使用默认分桶
+                "last_update_count": 0
+            }
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(init, f)
+        
+        # 初始化样本历史文件
+        if not os.path.exists(self._history_path):
+            import json
+            with open(self._history_path, "w", encoding="utf-8") as f:
+                json.dump({"samples": []}, f)
 
-    def load(self) -> Dict[str, List[Dict[str, Any]]]:
+    def load(self) -> Dict[str, Any]:
         import json
         try:
             with open(self._path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # 🔥 兼容旧格式：如果是旧格式，转换为新格式
+                if "islands" not in data:
+                    old_data = data
+                    data = {
+                        "islands": old_data,
+                        "adaptive_thresholds": None,
+                        "last_update_count": 0
+                    }
+                return data
         except Exception:
-            return {str(i): [] for i in range(self._num_islands)}
+            return {
+                "islands": {str(i): [] for i in range(self._num_islands)},
+                "adaptive_thresholds": None,
+                "last_update_count": 0
+            }
 
-    def save(self, data: Dict[str, List[Dict[str, Any]]]) -> None:
+    def save(self, data: Dict[str, Any]) -> None:
         import json
         with open(self._path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    def _load_sample_history(self) -> List[Dict[str, Any]]:
+        """加载样本历史"""
+        import json
+        try:
+            with open(self._history_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+                return history.get("samples", [])
+        except Exception:
+            return []
+    
+    def _save_sample_history(self, samples: List[Dict[str, Any]]) -> None:
+        """保存样本历史（保留最近N条）"""
+        import json
+        # 只保留最近的样本
+        recent_samples = samples[-self._recent_samples_window:] if len(samples) > self._recent_samples_window else samples
+        try:
+            with open(self._history_path, "w", encoding="utf-8") as f:
+                json.dump({"samples": recent_samples}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    
+    def _compute_adaptive_thresholds(self, samples: List[Dict[str, Any]]) -> Dict[str, float]:
+        """基于最近样本计算自适应分位数阈值"""
+        if len(samples) < 20:  # 样本太少时使用默认阈值
+            return None
+        
+        import numpy as np
+        scores = [s.get("score", 0.0) for s in samples if "score" in s]
+        if len(scores) < 10:
+            return None
+        
+        scores = np.array(scores)
+        # 🔥 计算分位数：P90→岛0(high), P70→岛1(mid-high), P40→岛2(mid), 其余→岛3(low)
+        try:
+            p90 = np.percentile(scores, 90)
+            p70 = np.percentile(scores, 70) 
+            p40 = np.percentile(scores, 40)
+            
+            thresholds = {
+                "p90": float(p90),  # 岛屿0阈值（high quality）
+                "p70": float(p70),  # 岛屿1阈值（mid-high quality）
+                "p40": float(p40),  # 岛屿2阈值（mid quality）
+                # 岛屿3：剩余样本（low quality）
+            }
+            
+            print(f"🏝️ 自适应阈值更新: P90={p90:.3f}, P70={p70:.3f}, P40={p40:.3f}")
+            return thresholds
+        except Exception as e:
+            print(f"⚠️ 计算自适应阈值失败: {e}")
+            return None
 
     def sample_few_shot(self, k: int = 3) -> List[str]:
-        """跨岛屿采样多样 few-shot（仅返回函数体片段/实现文本）。"""
+        """
+        🔥 V2改进版：跨岛屿采样多样few-shot，带质量标签/元信息
+        返回格式化的示例，包含质量标签和使用指导
+        """
         data = self.load()
+        islands = data.get("islands", {})
         examples: List[str] = []
-        if not data:
+        
+        if not islands:
             return examples
-        # 轮询各岛屿，尽量多样
-        for island_id, items in data.items():
+        
+        # 🔥 构建所有候选样本，按岛屿分组
+        all_candidates = []
+        quality_levels = ["high", "mid-high", "mid", "low"]
+        
+        for island_id, items in islands.items():
             if not items:
                 continue
-            # 优先 score 高的前几项
+            
+            # 确定质量等级
+            island_idx = int(island_id) if island_id.isdigit() else 3
+            quality = quality_levels[min(island_idx, 3)]
+            
+            # 优先score高的前几项
             items_sorted = sorted(items, key=lambda x: x.get("score", -1.0), reverse=True)
-            for it in items_sorted[:2]:
+            
+            for it in items_sorted[:2]:  # 每个岛屿最多取2个
                 impl = it.get("implementation", "")
                 if impl:
-                    examples.append(impl)
-                if len(examples) >= k:
-                    return examples
-        return examples[:k]
+                    score = it.get("score", 0.0)
+                    mse = it.get("mse")
+                    complexity = it.get("complexity")
+                    
+                    # 🔥 构建质量标签注释
+                    metadata = f"island={island_id}, quality={quality}, reward={score:.2f}"
+                    if mse is not None:
+                        metadata += f", mse={mse:.3f}"
+                    if complexity is not None:
+                        metadata += f", complexity={complexity:.1f}"
+                    
+                    # 🔥 添加使用指导（根据质量级别）
+                    if quality == "high":
+                        guidance = ""  # 高质量样本无需额外指导
+                    elif quality == "mid-high":
+                        guidance = "  # good pattern, minor refinements may help"
+                    elif quality == "mid":
+                        guidance = "  # exploratory pattern only; prefer smoother/parsimonious forms"
+                    else:  # low quality
+                        guidance = "  # counter-example; avoid this pattern; analyze why quality is low"
+                    
+                    # 🔥 格式化示例
+                    formatted_example = f"# Example [{metadata}]{guidance}\n{impl.rstrip()}"
+                    
+                    candidate = {
+                        "content": formatted_example,
+                        "island": island_idx,
+                        "quality": quality,
+                        "score": score
+                    }
+                    all_candidates.append(candidate)
+        
+        if not all_candidates:
+            return examples
+        
+        # 🔥 按质量和分数排序：高质量在前，同质量内按分数排序
+        all_candidates.sort(key=lambda x: (x["island"], -x["score"]))
+        
+        # 🔥 优先选择高质量示例，确保多样性
+        selected = []
+        
+        # 首先尽量选择高质量样本（岛屿0和1）
+        high_quality = [c for c in all_candidates if c["island"] <= 1]
+        selected.extend(high_quality[:max(1, k//2)])
+        
+        # 然后添加中等质量样本保持多样性
+        mid_quality = [c for c in all_candidates if c["island"] > 1]
+        remaining = k - len(selected)
+        if remaining > 0:
+            selected.extend(mid_quality[:remaining])
+        
+        # 提取内容
+        examples = [c["content"] for c in selected[:k]]
+        
+        print(f"🎯 Few-shot采样完成: {len(examples)}个示例，质量分布: {[c['quality'] for c in selected[:k]]}")
+        return examples
     
     def add_sample(self, function_body: str, score: float, mse: float = None, complexity: float = None) -> None:
-        """添加优秀样本到记忆库（跨岛屿分布）"""
+        """
+        🔥 V2改进版：添加优秀样本到记忆库（自适应分位数分桶）
+        """
         if not function_body or score < 0.1:  # 过滤低质量样本
             return
         
         try:
             data = self.load()
+            islands = data.get("islands", {})
+            adaptive_thresholds = data.get("adaptive_thresholds")
             
-            # 选择目标岛屿（基于score范围分布）
-            if score >= 0.8:
-                target_island = "0"  # 高质量岛屿
-            elif score >= 0.5:
-                target_island = "1"  # 中高质量岛屿  
-            elif score >= 0.3:
-                target_island = "2"  # 中质量岛屿
+            # 🔥 基于自适应阈值选择目标岛屿
+            if adaptive_thresholds and all(k in adaptive_thresholds for k in ["p90", "p70", "p40"]):
+                # 使用自适应分位数阈值
+                if score >= adaptive_thresholds["p90"]:
+                    target_island = "0"  # 高质量岛屿（P90以上）
+                elif score >= adaptive_thresholds["p70"]:
+                    target_island = "1"  # 中高质量岛屿（P70-P90）
+                elif score >= adaptive_thresholds["p40"]:
+                    target_island = "2"  # 中质量岛屿（P40-P70）
+                else:
+                    target_island = "3"  # 低质量岛屿（P40以下）
             else:
-                target_island = "3"  # 低质量岛屿
+                # 兜底：使用固定阈值（向后兼容）
+                if score >= 0.8:
+                    target_island = "0"
+                elif score >= 0.5:
+                    target_island = "1"
+                elif score >= 0.3:
+                    target_island = "2"
+                else:
+                    target_island = "3"
             
             # 构建样本记录
             sample = {
@@ -102,17 +264,41 @@ class MemoryManagerV2:
             }
             
             # 添加到目标岛屿
-            if target_island not in data:
-                data[target_island] = []
+            if target_island not in islands:
+                islands[target_island] = []
             
-            data[target_island].append(sample)
+            islands[target_island].append(sample)
             
             # 保持每个岛屿最多top_k个样本（按score排序）
-            data[target_island] = sorted(data[target_island], key=lambda x: x.get("score", 0), reverse=True)[:self._top_k]
+            islands[target_island] = sorted(islands[target_island], key=lambda x: x.get("score", 0), reverse=True)[:self._top_k]
+            
+            # 🔥 更新样本历史
+            sample_history = self._load_sample_history()
+            sample_history.append(sample)
+            self._save_sample_history(sample_history)
+            
+            # 🔥 检查是否需要更新自适应阈值
+            self._samples_since_update += 1
+            if self._samples_since_update >= self._update_frequency:
+                recent_samples = sample_history[-self._recent_samples_window:] if len(sample_history) > self._recent_samples_window else sample_history
+                new_thresholds = self._compute_adaptive_thresholds(recent_samples)
+                if new_thresholds:
+                    data["adaptive_thresholds"] = new_thresholds
+                data["last_update_count"] = len(sample_history)
+                self._samples_since_update = 0
+                print(f"🔄 已触发自适应阈值更新，基于{len(recent_samples)}个最近样本")
+            
+            # 更新数据结构
+            data["islands"] = islands
             
             # 保存更新后的数据
             self.save(data)
-            print(f"✅ 成功添加样本到岛屿{target_island}，score: {score:.3f}")
+            
+            threshold_info = ""
+            if adaptive_thresholds:
+                threshold_info = f" (自适应阈值: P90={adaptive_thresholds['p90']:.3f})"
+            
+            print(f"✅ 成功添加样本到岛屿{target_island}，score: {score:.3f}{threshold_info}")
             
         except Exception as e:
             print(f"⚠️ 添加样本到memory失败: {e}")
@@ -157,13 +343,28 @@ def create_llmsr_dataset_v2(
         spec_text = f.read()
     base_prompt = _extract_prompt_header(spec_text)
 
-    # few-shot 拼接
+    # 🔥 V2改进版：few-shot 拼接 + 护栏提示（英文）
     memory = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
     examples = memory.sample_few_shot(k=few_shot_k)
+    
     if examples:
-        few_shot_block = "\n\n# === Few-shot program skeletons (from memory) ===\n" + "\n\n".join(examples)
+        # 🔥 添加护栏说明（英文）
+        guardrail_instruction = """
+# === Few-shot Examples from Memory (Quality-Guided) ===
+# PRIORITY GUIDANCE: 
+# - Follow examples marked as "quality=high" primarily
+# - Examples with "quality=mid-high" show good patterns with minor refinements needed
+# - Examples with "quality=mid" are exploratory only; prefer smoother/parsimonious forms
+# - Examples with "quality=low" are counter-examples; analyze why quality is low and avoid similar patterns
+# - Focus on mathematical correctness, simplicity, and numerical stability
+"""
+        
+        # 🔥 格式化few-shot块
+        few_shot_content = guardrail_instruction + "\n" + "\n\n".join(examples)
+        few_shot_block = few_shot_content
     else:
         few_shot_block = ""
+    
     composed_prompt = (base_prompt + few_shot_block).strip()
 
     df = pd.read_csv(data_path)
