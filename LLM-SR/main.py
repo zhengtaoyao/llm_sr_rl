@@ -60,6 +60,10 @@ parser.add_argument('--max_num_batched_tokens', type=int, default=8192,  # 🔥 
                     help='Max number of batched tokens for GRPO')
 parser.add_argument('--few_shot_k', type=int, default=3,
                     help='Few-shot examples from memory for v2 dataset builder')
+parser.add_argument('--num_islands', type=int, default=4,
+                    help='Number of memory islands for v2 (default: 4)')
+parser.add_argument('--top_k_per_island', type=int, default=8,
+                    help='Top-k samples to keep per island for v2 (default: 8)')
 
 # 🌐 HTTP GRPO-related arguments
 parser.add_argument('--use_http', action='store_true', default=False,
@@ -128,6 +132,8 @@ if __name__ == '__main__':
                 learning_rate=args.learning_rate,
                 epochs=args.epochs,
                 few_shot_k=args.few_shot_k,
+                num_islands=args.num_islands,
+                top_k_per_island=args.top_k_per_island,
             )
         # 🌐 HTTP GRPO Training Mode (优先检查)
         elif args.use_http:

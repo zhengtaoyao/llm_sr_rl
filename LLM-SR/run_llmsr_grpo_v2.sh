@@ -7,13 +7,15 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 GPUS=${GPUS:-8}
 
 PROBLEM_NAME=${PROBLEM_NAME:-"oscillator1"}
+# 可选的问题名称: oscillator1, oscillator2, bactgrow, stressstrain
 SPEC_PATH=${SPEC_PATH:-"./specs/specification_${PROBLEM_NAME}_numpy.txt"}
 MODEL_PATH=${MODEL_PATH:-"/storage/home/westlakeLab/zhangjunlei/Qwen3-8B"}
 # 🔥 修复输出目录命名，使其与v1版本一致包含时间戳
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUT_DIR=${OUT_DIR:-"./llmsr_grpo_outputs/${PROBLEM_NAME}_qwen8b_v2_${TIMESTAMP}"}
 
-EPOCHS=${EPOCHS:-5}
+EPOCHS=${EPOCHS:-7}
+BATCH_SIZE=${BATCH_SIZE:-20}   
 LR=${LR:-1e-6}
 ROLLOUT_N=${ROLLOUT_N:-4}
 KL_COEF=${KL_COEF:-1e-3}
@@ -25,8 +27,12 @@ MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}       # 模型最大长度：16K tokens
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}  # 批量token数：8K
 
 GRID_TRAIN=${GRID_TRAIN:-0}
-NUM_GROUPS=${NUM_GROUPS:-10}
+NUM_GROUPS=${NUM_GROUPS:-10} 
 FEW_SHOT_K=${FEW_SHOT_K:-3}
+
+# 🏝️ 群岛机制超参数配置
+NUM_ISLANDS=${NUM_ISLANDS:-4}           # 群岛数量（默认4个）
+TOP_K_PER_ISLAND=${TOP_K_PER_ISLAND:-8} # 每个岛屿保存的top样本数（默认8个）
 
 LOG_DIR=${LOG_DIR:-"./llmsr_logs"}
 # 若同名文件已存在且不是目录，则使用备用目录
@@ -103,8 +109,12 @@ echo -e "  提示长度: ${YELLOW}$MAX_PROMPT_LEN${NC} tokens"
 echo -e "  生成长度: ${YELLOW}$MAX_NEW_TOKENS${NC} tokens"
 echo -e "  模型最大长度: ${YELLOW}$MAX_MODEL_LEN${NC} tokens"
 echo -e "  批量Token数: ${YELLOW}$MAX_NUM_BATCHED_TOKENS${NC} tokens"
+echo -e "${GREEN}🏝️  群岛机制配置:${NC}"
+echo -e "  群岛数量: ${YELLOW}$NUM_ISLANDS${NC} 个"
+echo -e "  每岛top样本: ${YELLOW}$TOP_K_PER_ISLAND${NC} 个"
+echo -e "  Few-shot样本数: ${YELLOW}$FEW_SHOT_K${NC} 个"
 echo -e "  输出目录: ${YELLOW}$OUT_DIR${NC}"
-echo -e "  训练模式: ${YELLOW}🔥 v2模式 - 大Token支持 + 截断修复${NC}"
+echo -e "  训练模式: ${YELLOW}🔥 v2模式 - 群岛Few-shot + 大Token支持${NC}"
 
 echo -e "${GREEN}✅ 环境变量设置完成${NC}"
 
@@ -150,11 +160,14 @@ CMD=(
     --gpus "$GPUS" \
     --output_dir "$OUT_DIR" \
     --kl_coef "$KL_COEF" \
+    --batch_size "$BATCH_SIZE" \
     --max_prompt_length "$MAX_PROMPT_LEN" \
     --max_new_tokens "$MAX_NEW_TOKENS" \
     --max_model_len "$MAX_MODEL_LEN" \
     --max_num_batched_tokens "$MAX_NUM_BATCHED_TOKENS" \
     --few_shot_k "$FEW_SHOT_K" \
+    --num_islands "$NUM_ISLANDS" \
+    --top_k_per_island "$TOP_K_PER_ISLAND" \
     --log_path "$LOG_FILE"
 )
 

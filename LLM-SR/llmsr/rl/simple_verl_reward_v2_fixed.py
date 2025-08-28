@@ -31,7 +31,7 @@ def compute_score(
     memory_dir=None,
     lambda_nmse=3.0,
     lambda_simp=0.1,
-    w_fit=0.6,
+    w_fit=0.75,
     w_simp=0.2,
     w_phys=0.15,
     w_proc=0.05,
@@ -42,6 +42,9 @@ def compute_score(
     invalid_penalty=-0.5,       # 无效样本惩罚
     # 🔥 物理一致性奖励开关（默认关闭）
     enable_physics_reward=False,  # 是否启用物理一致性奖励
+    # 🏝️ 群岛机制超参数
+    num_islands=4,              # 群岛数量
+    top_k_per_island=8,         # 每个岛屿保存的top样本数
     **kwargs,
 ):
     print(f"🔥🔥🔥 FIXED V2 REWARD FUNCTION CALLED! 🔥🔥🔥")
@@ -132,6 +135,20 @@ def compute_score(
         except Exception:
             jsonl_path = None
 
+    # 🔥 初始化memory管理器（用于更新memory）
+    memory_manager = None
+    if memory_dir and os.path.exists(memory_dir):
+        try:
+            # 导入MemoryManagerV2（需要确保路径正确）
+            import sys
+            sys.path.append("/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR")
+            from llmsr.rl.grpo_runner_v2 import MemoryManagerV2
+            memory_manager = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
+            print(f"✅ V2 成功初始化memory管理器: {memory_dir} (岛屿:{num_islands}, 每岛top-k:{top_k_per_island})")
+        except Exception as e:
+            print(f"⚠️ V2 memory管理器初始化失败: {e}")
+            memory_manager = None
+
     rewards: List[float] = []
     for i, code in enumerate(solution_strs):
         base_impl = None
@@ -195,6 +212,22 @@ def compute_score(
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             except Exception as e:
                 print(f"⚠️ 记录sample.jsonl失败: {e}")
+                pass
+
+        # 🔥 新增：将优秀样本添加到memory（群岛机制的关键修复！）
+        if memory_manager and execution_success and final_reward > 0.3:  # 过滤低质量样本
+            try:
+                function_body = extract_function_body_v2(code)
+                if function_body:  # 确保函数体不为空
+                    memory_manager.add_sample(
+                        function_body=function_body,
+                        score=final_reward,
+                        mse=mse,
+                        complexity=complexity
+                    )
+                    print(f"🎯 V2 成功添加样本到memory，score: {final_reward:.3f}")
+            except Exception as e:
+                print(f"⚠️ V2 添加样本到memory失败: {e}")
                 pass
 
     # 组内排名归一（若 VERL 批次来自同一提示组，可降低尺度噪声）

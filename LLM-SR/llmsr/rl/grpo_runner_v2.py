@@ -12,6 +12,7 @@ GRPO v2 Training Runner for LLM-SR
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -72,6 +73,50 @@ class MemoryManagerV2:
                 if len(examples) >= k:
                     return examples
         return examples[:k]
+    
+    def add_sample(self, function_body: str, score: float, mse: float = None, complexity: float = None) -> None:
+        """添加优秀样本到记忆库（跨岛屿分布）"""
+        if not function_body or score < 0.1:  # 过滤低质量样本
+            return
+        
+        try:
+            data = self.load()
+            
+            # 选择目标岛屿（基于score范围分布）
+            if score >= 0.8:
+                target_island = "0"  # 高质量岛屿
+            elif score >= 0.5:
+                target_island = "1"  # 中高质量岛屿  
+            elif score >= 0.3:
+                target_island = "2"  # 中质量岛屿
+            else:
+                target_island = "3"  # 低质量岛屿
+            
+            # 构建样本记录
+            sample = {
+                "implementation": function_body,
+                "score": float(score),
+                "mse": float(mse) if mse is not None else None,
+                "complexity": float(complexity) if complexity is not None else None,
+                "timestamp": time.time()
+            }
+            
+            # 添加到目标岛屿
+            if target_island not in data:
+                data[target_island] = []
+            
+            data[target_island].append(sample)
+            
+            # 保持每个岛屿最多top_k个样本（按score排序）
+            data[target_island] = sorted(data[target_island], key=lambda x: x.get("score", 0), reverse=True)[:self._top_k]
+            
+            # 保存更新后的数据
+            self.save(data)
+            print(f"✅ 成功添加样本到岛屿{target_island}，score: {score:.3f}")
+            
+        except Exception as e:
+            print(f"⚠️ 添加样本到memory失败: {e}")
+            pass
 
 
 def _extract_prompt_header(spec_text: str) -> str:
@@ -98,6 +143,9 @@ def create_llmsr_dataset_v2(
     grid_train_data: bool = False,
     num_grid_groups: int = 10,
     few_shot_k: int = 3,
+    # 🏝️ 群岛机制超参数
+    num_islands: int = 4,           # 群岛数量
+    top_k_per_island: int = 8,      # 每个岛屿保存的top样本数
 ) -> str:
     import pandas as pd
     import numpy as np
@@ -110,7 +158,7 @@ def create_llmsr_dataset_v2(
     base_prompt = _extract_prompt_header(spec_text)
 
     # few-shot 拼接
-    memory = MemoryManagerV2(memory_dir)
+    memory = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
     examples = memory.sample_few_shot(k=few_shot_k)
     if examples:
         few_shot_block = "\n\n# === Few-shot program skeletons (from memory) ===\n" + "\n\n".join(examples)
@@ -246,7 +294,10 @@ def create_llmsr_reward_file_v2(
     length_penalty_alpha: float = 0.03,
     parse_bonus: float = 0.1,
     invalid_penalty: float = -0.5,
-    enable_physics_reward: bool = False
+    enable_physics_reward: bool = False,
+    # 🏝️ 群岛机制超参数
+    num_islands: int = 4,           # 群岛数量
+    top_k_per_island: int = 8,      # 每个岛屿保存的top样本数
 ) -> str:
     code = f'''"""
 Wrapper for v2 reward to plug into VERL custom_reward_function.
@@ -274,6 +325,8 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         parse_bonus={parse_bonus},
         invalid_penalty={invalid_penalty},
         enable_physics_reward={enable_physics_reward},
+        num_islands={num_islands},
+        top_k_per_island={top_k_per_island},
         **kwargs
     )
 '''
@@ -813,6 +866,9 @@ def train_llmsr_grpo_v2(
     learning_rate: float = 1e-6,
     epochs: int = 5,
     few_shot_k: int = 3,
+    # 🏝️ 群岛机制超参数
+    num_islands: int = 4,           # 群岛数量
+    top_k_per_island: int = 8,      # 每个岛屿保存的top样本数
     # 🔥 新增长度惩罚和解析奖励参数
     length_penalty_alpha: float = 0.03,  # 长度惩罚系数，建议0.02-0.05
     parse_bonus: float = 0.1,            # 解析成功奖励
@@ -858,6 +914,8 @@ def train_llmsr_grpo_v2(
         grid_train_data=grid_train_data,
         num_grid_groups=num_grid_groups,
         few_shot_k=few_shot_k,
+        num_islands=num_islands,
+        top_k_per_island=top_k_per_island,
     )
 
     # 2) 奖励文件
@@ -871,6 +929,8 @@ def train_llmsr_grpo_v2(
         parse_bonus=parse_bonus,
         invalid_penalty=invalid_penalty,
         enable_physics_reward=enable_physics_reward,
+        num_islands=num_islands,
+        top_k_per_island=top_k_per_island,
     )
 
     # 3) 配置
