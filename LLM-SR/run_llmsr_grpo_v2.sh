@@ -37,6 +37,9 @@ TOP_K_PER_ISLAND=${TOP_K_PER_ISLAND:-8} # 每个岛屿保存的top样本数（�
 # 🔥 过程奖励开关（默认开启）
 ENABLE_PROCESS_REWARD=${ENABLE_PROCESS_REWARD:-0}  # 1=开启真过程奖励，0=使用占位式奖励
 
+# 🔥 数据集动态刷新配置（内置版）
+DATASET_REFRESH_THRESHOLD=${DATASET_REFRESH_THRESHOLD:-8}  # 群岛新样本数达到此阈值时触发刷新
+
 LOG_DIR=${LOG_DIR:-"./llmsr_logs"}
 # 若同名文件已存在且不是目录，则使用备用目录
 if [[ -e "$LOG_DIR" && ! -d "$LOG_DIR" ]]; then
@@ -85,11 +88,11 @@ if [[ ! -f "./data/${PROBLEM_NAME}/train.csv" ]]; then
 fi
 
 # 检查 conda 环境
-if [[ "$CONDA_DEFAULT_ENV" != "verl" ]]; then
-    echo -e "${YELLOW}⚠️  激活 conda 环境 (verl)...${NC}"
+if [[ "$CONDA_DEFAULT_ENV" != "verl_v2" ]]; then
+    echo -e "${YELLOW}⚠️  激活 conda 环境 (verl_v2)...${NC}"
     source ~/miniconda3/etc/profile.d/conda.sh
-    conda activate verl || { 
-        echo -e "${RED}❌ 无法激活 verl 环境${NC}"; 
+    conda activate verl_v2 || { 
+        echo -e "${RED}❌ 无法激活 verl_v2 环境${NC}"; 
         exit 1; 
     }
 fi
@@ -122,8 +125,11 @@ if [[ "$ENABLE_PROCESS_REWARD" == "1" ]]; then
 else
     echo -e "  过程奖励: ${YELLOW}占位式奖励（MSE阈值）${NC}"
 fi
+echo -e "${GREEN}🔄 数据集动态刷新配置 (内置版):${NC}"
+echo -e "  刷新触发阈值: ${YELLOW}群岛新样本数>=${DATASET_REFRESH_THRESHOLD}${NC}"
+echo -e "  刷新方式: ${YELLOW}内置自动检测（无外部监控器）${NC}"
 echo -e "  输出目录: ${YELLOW}$OUT_DIR${NC}"
-echo -e "  训练模式: ${YELLOW}🔥 v2模式 - 群岛Few-shot + 大Token支持${NC}"
+echo -e "  训练模式: ${YELLOW}🔥 v2模式 - 群岛Few-shot + 大Token支持 + 内置动态数据集${NC}"
 
 echo -e "${GREEN}✅ 环境变量设置完成${NC}"
 
@@ -208,5 +214,9 @@ else
   echo -e "${RED}❌ 训练进程未存活，请查看日志: ${LOG_FILE}${NC}"
   exit 1
 fi
+
+echo -e "${BLUE}✅ 群岛few-shot动态更新机制已启用${NC}"
+echo -e "${YELLOW}💡 数据集将在群岛新样本数达到${DATASET_REFRESH_THRESHOLD}时自动刷新${NC}"
+echo -e "${YELLOW}📊 监控群岛状态: tail -f ${LOG_FILE} | grep '群岛\|岛屿\|刷新'${NC}"
 
 
