@@ -1312,7 +1312,7 @@ def create_grpo_config_v2(
                 "num_cpus": None,
                 "runtime_env": {
                     "env_vars": {
-                        "PYTHONPATH": os.environ.get("LOCAL_PYTHON_PATH", "")
+                        "PYTHONPATH": os.environ.get("LOCAL_PYTHON_PATH", "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR")
                     }
                 }
             }
