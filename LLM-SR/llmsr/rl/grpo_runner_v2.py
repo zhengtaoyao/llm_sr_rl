@@ -31,6 +31,7 @@ class MemoryManagerV2:
     def __init__(self, memory_dir: str, top_k_per_island: int = 8, num_islands: int = 4,
                  update_frequency: int = 50, recent_samples_window: int = 200) -> None:
         os.makedirs(memory_dir, exist_ok=True)
+        self._memory_dir = memory_dir  # 🔥 保存目录用于创建版本化文件
         self._path = os.path.join(memory_dir, "memory_v2.json")
         self._history_path = os.path.join(memory_dir, "sample_history.json")  # 🔥 新增：样本历史
         self._top_k = top_k_per_island
@@ -38,6 +39,9 @@ class MemoryManagerV2:
         self._update_frequency = update_frequency  # 每N次写库后重新计算分位数
         self._recent_samples_window = recent_samples_window  # 最近M条样本用于计算分位数
         self._samples_since_update = 0  # 自上次更新后的样本计数
+        self._update_version = 0  # 🔥 新增：版本计数器
+        self._samples_since_last_dataset_refresh = 0  # 🔥 新增：自上次数据集刷新后的新样本数
+        self._dataset_refresh_threshold = 8  # 🔥 新增：触发数据集刷新的新样本阈值
 
         if not os.path.exists(self._path):
             # 初始化空结构
@@ -45,7 +49,9 @@ class MemoryManagerV2:
             init = {
                 "islands": {str(i): [] for i in range(self._num_islands)},
                 "adaptive_thresholds": None,  # 🔥 自适应阈值，初始为None使用默认分桶
-                "last_update_count": 0
+                "last_update_count": 0,
+                "version": 0,  # 🔥 新增：版本号
+                "last_dataset_refresh_version": 0,  # 🔥 记录上次数据集刷新时的版本号
             }
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(init, f)
@@ -67,20 +73,55 @@ class MemoryManagerV2:
                     data = {
                         "islands": old_data,
                         "adaptive_thresholds": None,
-                        "last_update_count": 0
+                        "last_update_count": 0,
+                        "version": 0,  # 🔥 新增版本号
+                        "last_dataset_refresh_version": 0  # 🔥 新增数据集刷新版本号
                     }
+                # 🔥 兼容缺失字段的情况
+                elif "version" not in data:
+                    data["version"] = 0
+                if "last_dataset_refresh_version" not in data:
+                    data["last_dataset_refresh_version"] = 0
                 return data
         except Exception:
             return {
                 "islands": {str(i): [] for i in range(self._num_islands)},
                 "adaptive_thresholds": None,
-                "last_update_count": 0
+                "last_update_count": 0,
+                "version": 0,  # 🔥 新增版本号
+                "last_dataset_refresh_version": 0  # 🔥 新增数据集刷新版本号
             }
 
-    def save(self, data: Dict[str, Any]) -> None:
+    def save(self, data: Dict[str, Any], create_versioned_copy: bool = False) -> None:
+        """
+        保存memory数据
+        Args:
+            data: 要保存的数据
+            create_versioned_copy: 是否创建带时间戳的版本化副本
+        """
         import json
+        import time
+        from datetime import datetime
+        
+        # 🔥 更新版本号
+        current_version = data.get("version", 0)
+        data["version"] = current_version + 1
+        self._update_version = data["version"]
+        
+        # 保存主文件
         with open(self._path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        # 🔥 创建带时间戳的版本化副本
+        if create_versioned_copy:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            versioned_filename = f"memory_v2_version_{data['version']:04d}_{timestamp}.json"
+            versioned_path = os.path.join(self._memory_dir, versioned_filename)
+            
+            with open(versioned_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            print(f"🗃️ 创建版本化memory副本: {versioned_filename}")
     
     def _load_sample_history(self) -> List[Dict[str, Any]]:
         """加载样本历史"""
@@ -133,10 +174,16 @@ class MemoryManagerV2:
             print(f"⚠️ 计算自适应阈值失败: {e}")
             return None
 
-    def sample_few_shot(self, k: int = 3) -> List[str]:
+    def sample_few_shot(self, k: int = 3, use_random_sampling: bool = True) -> List[str]:
         """
         🔥 V2改进版：跨岛屿采样多样few-shot，带质量标签/元信息
-        返回格式化的示例，包含质量标签和使用指导
+        
+        Args:
+            k: 最大采样数量（如果use_random_sampling=True则忽略）
+            use_random_sampling: 是否使用新的随机采样逻辑（每个岛屿随机一个）
+        
+        Returns:
+            格式化的示例列表，包含质量标签和使用指导
         """
         data = self.load()
         islands = data.get("islands", {})
@@ -145,27 +192,31 @@ class MemoryManagerV2:
         if not islands:
             return examples
         
-        # 🔥 构建所有候选样本，按岛屿分组
-        all_candidates = []
         quality_levels = ["high", "mid-high", "mid", "low"]
         
-        for island_id, items in islands.items():
-            if not items:
-                continue
+        if use_random_sampling:
+            # 🔥 新的采样逻辑：从四个岛屿中每个岛屿随机抽取一个样本
+            import random
+            selected_samples = []
             
-            # 确定质量等级
-            island_idx = int(island_id) if island_id.isdigit() else 3
-            quality = quality_levels[min(island_idx, 3)]
-            
-            # 优先score高的前几项
-            items_sorted = sorted(items, key=lambda x: x.get("score", -1.0), reverse=True)
-            
-            for it in items_sorted[:2]:  # 每个岛屿最多取2个
-                impl = it.get("implementation", "")
+            for island_id in range(self._num_islands):
+                island_id_str = str(island_id)
+                items = islands.get(island_id_str, [])
+                
+                if not items:
+                    continue  # 该岛屿为空，跳过
+                
+                # 🔥 从该岛屿随机选择一个样本
+                selected_item = random.choice(items)
+                
+                # 确定质量等级
+                quality = quality_levels[min(island_id, 3)]
+                
+                impl = selected_item.get("implementation", "")
                 if impl:
-                    score = it.get("score", 0.0)
-                    mse = it.get("mse")
-                    complexity = it.get("complexity")
+                    score = selected_item.get("score", 0.0)
+                    mse = selected_item.get("mse")
+                    complexity = selected_item.get("complexity")
                     
                     # 🔥 构建质量标签注释
                     metadata = f"island={island_id}, quality={quality}, reward={score:.2f}"
@@ -186,46 +237,96 @@ class MemoryManagerV2:
                     
                     # 🔥 格式化示例
                     formatted_example = f"# Example [{metadata}]{guidance}\n{impl.rstrip()}"
-                    
-                    candidate = {
-                        "content": formatted_example,
-                        "island": island_idx,
-                        "quality": quality,
-                        "score": score
-                    }
-                    all_candidates.append(candidate)
-        
-        if not all_candidates:
+                    examples.append(formatted_example)
+            
+            print(f"🎯 随机Few-shot采样完成: {len(examples)}个示例，来自{len(examples)}个不同岛屿")
             return examples
         
-        # 🔥 按质量和分数排序：高质量在前，同质量内按分数排序
-        all_candidates.sort(key=lambda x: (x["island"], -x["score"]))
-        
-        # 🔥 优先选择高质量示例，确保多样性
-        selected = []
-        
-        # 首先尽量选择高质量样本（岛屿0和1）
-        high_quality = [c for c in all_candidates if c["island"] <= 1]
-        selected.extend(high_quality[:max(1, k//2)])
-        
-        # 然后添加中等质量样本保持多样性
-        mid_quality = [c for c in all_candidates if c["island"] > 1]
-        remaining = k - len(selected)
-        if remaining > 0:
-            selected.extend(mid_quality[:remaining])
-        
-        # 提取内容
-        examples = [c["content"] for c in selected[:k]]
-        
-        print(f"🎯 Few-shot采样完成: {len(examples)}个示例，质量分布: {[c['quality'] for c in selected[:k]]}")
-        return examples
+        else:
+            # 🔥 保留原有的采样逻辑（兼容性）
+            # 构建所有候选样本，按岛屿分组
+            all_candidates = []
+            
+            for island_id, items in islands.items():
+                if not items:
+                    continue
+                
+                # 确定质量等级
+                island_idx = int(island_id) if island_id.isdigit() else 3
+                quality = quality_levels[min(island_idx, 3)]
+                
+                # 优先score高的前几项
+                items_sorted = sorted(items, key=lambda x: x.get("score", -1.0), reverse=True)
+                
+                for it in items_sorted[:2]:  # 每个岛屿最多取2个
+                    impl = it.get("implementation", "")
+                    if impl:
+                        score = it.get("score", 0.0)
+                        mse = it.get("mse")
+                        complexity = it.get("complexity")
+                        
+                        # 🔥 构建质量标签注释
+                        metadata = f"island={island_id}, quality={quality}, reward={score:.2f}"
+                        if mse is not None:
+                            metadata += f", mse={mse:.3f}"
+                        if complexity is not None:
+                            metadata += f", complexity={complexity:.1f}"
+                        
+                        # 🔥 添加使用指导（根据质量级别）
+                        if quality == "high":
+                            guidance = ""  # 高质量样本无需额外指导
+                        elif quality == "mid-high":
+                            guidance = "  # good pattern, minor refinements may help"
+                        elif quality == "mid":
+                            guidance = "  # exploratory pattern only; prefer smoother/parsimonious forms"
+                        else:  # low quality
+                            guidance = "  # counter-example; avoid this pattern; analyze why quality is low"
+                        
+                        # 🔥 格式化示例
+                        formatted_example = f"# Example [{metadata}]{guidance}\n{impl.rstrip()}"
+                        
+                        candidate = {
+                            "content": formatted_example,
+                            "island": island_idx,
+                            "quality": quality,
+                            "score": score
+                        }
+                        all_candidates.append(candidate)
+            
+            if not all_candidates:
+                return examples
+            
+            # 🔥 按质量和分数排序：高质量在前，同质量内按分数排序
+            all_candidates.sort(key=lambda x: (x["island"], -x["score"]))
+            
+            # 🔥 优先选择高质量示例，确保多样性
+            selected = []
+            
+            # 首先尽量选择高质量样本（岛屿0和1）
+            high_quality = [c for c in all_candidates if c["island"] <= 1]
+            selected.extend(high_quality[:max(1, k//2)])
+            
+            # 然后添加中等质量样本保持多样性
+            mid_quality = [c for c in all_candidates if c["island"] > 1]
+            remaining = k - len(selected)
+            if remaining > 0:
+                selected.extend(mid_quality[:remaining])
+            
+            # 提取内容
+            examples = [c["content"] for c in selected[:k]]
+            
+            print(f"🎯 Few-shot采样完成: {len(examples)}个示例，质量分布: {[c['quality'] for c in selected[:k]]}")
+            return examples
     
-    def add_sample(self, function_body: str, score: float, mse: float = None, complexity: float = None) -> None:
+    def add_sample(self, function_body: str, score: float, mse: float = None, complexity: float = None) -> bool:
         """
         🔥 V2改进版：添加优秀样本到记忆库（自适应分位数分桶）
+        
+        Returns:
+            bool: 是否需要刷新数据集（当新样本数>=8时）
         """
         if not function_body or score < 0.1:  # 过滤低质量样本
-            return
+            return False
         
         try:
             data = self.load()
@@ -279,11 +380,14 @@ class MemoryManagerV2:
             
             # 🔥 检查是否需要更新自适应阈值
             self._samples_since_update += 1
+            create_version = False  # 🔥 新增：是否创建版本化副本
+            
             if self._samples_since_update >= self._update_frequency:
                 recent_samples = sample_history[-self._recent_samples_window:] if len(sample_history) > self._recent_samples_window else sample_history
                 new_thresholds = self._compute_adaptive_thresholds(recent_samples)
                 if new_thresholds:
                     data["adaptive_thresholds"] = new_thresholds
+                    create_version = True  # 🔥 阈值更新时创建版本
                 data["last_update_count"] = len(sample_history)
                 self._samples_since_update = 0
                 print(f"🔄 已触发自适应阈值更新，基于{len(recent_samples)}个最近样本")
@@ -291,18 +395,81 @@ class MemoryManagerV2:
             # 更新数据结构
             data["islands"] = islands
             
-            # 保存更新后的数据
-            self.save(data)
+            # 🔥 增加新样本计数
+            self._samples_since_last_dataset_refresh += 1
+            
+            # 🔥 检查是否需要刷新数据集（基于新样本数）
+            last_refresh_version = data.get("last_dataset_refresh_version", 0)
+            current_version = data.get("version", 0)
+            
+            # 计算自上次刷新以来的版本差异（近似为新样本数的指标）
+            version_diff = current_version - last_refresh_version
+            need_refresh = self._samples_since_last_dataset_refresh >= self._dataset_refresh_threshold
+            
+            if need_refresh:
+                print(f"🔄 达到数据集刷新阈值：新样本数={self._samples_since_last_dataset_refresh} >= {self._dataset_refresh_threshold}")
+                # 🔥 记录刷新时的版本号，重置计数器
+                data["last_dataset_refresh_version"] = current_version + 1  # +1因为下面会再增加版本号
+                self._samples_since_last_dataset_refresh = 0
+                create_version = True  # 强制创建版本化副本
+            
+            # 🔥 保存更新后的数据，在重要更新时创建版本化副本
+            self.save(data, create_versioned_copy=create_version)
             
             threshold_info = ""
             if adaptive_thresholds:
                 threshold_info = f" (自适应阈值: P90={adaptive_thresholds['p90']:.3f})"
             
-            print(f"✅ 成功添加样本到岛屿{target_island}，score: {score:.3f}{threshold_info}")
+            refresh_info = f" [触发数据集刷新]" if need_refresh else ""
+            print(f"✅ 成功添加样本到岛屿{target_island}，score: {score:.3f}{threshold_info}{refresh_info}")
+            
+            return need_refresh
             
         except Exception as e:
             print(f"⚠️ 添加样本到memory失败: {e}")
-            pass
+            return False
+    
+
+    
+    def get_island_stats(self) -> Dict[str, Any]:
+        """
+        🔥 获取群岛统计信息（用于监控）
+        """
+        data = self.load()
+        islands = data.get("islands", {})
+        stats = {
+            "version": data.get("version", 0),
+            "total_samples": sum(len(items) for items in islands.values()),
+            "islands_info": {}
+        }
+        
+        quality_levels = ["high", "mid-high", "mid", "low"]
+        for island_id, items in islands.items():
+            island_idx = int(island_id) if island_id.isdigit() else 3
+            quality = quality_levels[min(island_idx, 3)]
+            
+            if items:
+                scores = [item.get("score", 0.0) for item in items]
+                stats["islands_info"][island_id] = {
+                    "quality": quality,
+                    "count": len(items),
+                    "avg_score": sum(scores) / len(scores),
+                    "max_score": max(scores),
+                    "min_score": min(scores)
+                }
+            else:
+                stats["islands_info"][island_id] = {
+                    "quality": quality,
+                    "count": 0,
+                    "avg_score": 0.0,
+                    "max_score": 0.0,
+                    "min_score": 0.0
+                }
+        
+        return stats
+
+
+
 
 
 def _extract_prompt_header(spec_text: str) -> str:
@@ -319,6 +486,121 @@ def _extract_prompt_header(spec_text: str) -> str:
         if not in_evolve:
             prompt_lines.append(line.rstrip())
     return "\n".join(prompt_lines).strip()
+
+
+def refresh_dataset_with_islands(
+    dataset_path: str,
+    template_path: str,
+    data_path: str,
+    memory_dir: str,
+    output_dir: str,
+    grid_train_data: bool = False,
+    num_grid_groups: int = 10,
+    few_shot_k: int = 3,
+    num_islands: int = 4,
+    top_k_per_island: int = 8,
+) -> str:
+    """
+    🔥 新增：动态刷新数据集，从群岛中重新采样few-shot examples并生成新的数据集
+    
+    Args:
+        dataset_path: 现有数据集路径
+        template_path: 模板文件路径
+        data_path: 原始数据路径
+        memory_dir: 群岛memory目录
+        output_dir: 输出目录
+        其他参数: 与create_llmsr_dataset_v2相同
+        
+    Returns:
+        新数据集文件路径
+    """
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from datetime import datetime
+    
+    print(f"🔄 开始刷新数据集，从群岛重新采样few-shot examples...")
+    
+    # 🔥 从群岛中重新采样few-shot examples（使用随机采样）
+    memory = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
+    examples = memory.sample_few_shot(k=few_shot_k, use_random_sampling=True)
+    
+    if not examples:
+        print(f"⚠️ 群岛中没有样本，保持原数据集不变")
+        return dataset_path
+    
+    # 🔥 重新构建带few-shot的prompt
+    with open(template_path, "r", encoding="utf-8") as f:
+        spec_text = f.read()
+    base_prompt = _extract_prompt_header(spec_text)
+    
+    # 🔥 添加护栏说明（英文）
+    guardrail_instruction = """
+# === Few-shot Examples from Memory (Quality-Guided) ===
+# PRIORITY GUIDANCE: 
+# - Follow examples marked as "quality=high" primarily
+# - Examples with "quality=mid-high" show good patterns with minor refinements needed
+# - Examples with "quality=mid" are exploratory only; prefer smoother/parsimonious forms
+# - Examples with "quality=low" are counter-examples; analyze why quality is low and avoid similar patterns
+# - Focus on mathematical correctness, simplicity, and numerical stability
+"""
+    
+    # 🔥 格式化few-shot块
+    few_shot_content = guardrail_instruction + "\n" + "\n\n".join(examples)
+    few_shot_block = few_shot_content
+    composed_prompt = (base_prompt + few_shot_block).strip()
+    
+    # 🔥 读取原有数据集的数据部分（保持相同的数据分布）
+    try:
+        # 尝试读取原始parquet文件的数据
+        original_table = pq.read_table(dataset_path)
+        original_data = original_table.to_pylist()
+        
+        print(f"✅ 从原数据集读取{len(original_data)}条记录")
+        
+        # 🔥 更新每条记录的prompt部分
+        updated_entries = []
+        for entry in original_data:
+            # 保持原有的系统消息
+            original_prompt = entry.get("prompt", [])
+            if len(original_prompt) >= 2:
+                system_msg = original_prompt[0]  # 保持系统消息不变
+                # 更新用户消息为新的few-shot prompt
+                updated_prompt = [
+                    system_msg,
+                    {"role": "user", "content": composed_prompt}
+                ]
+                entry["prompt"] = updated_prompt
+            
+            updated_entries.append(entry)
+        
+        # 🔥 生成新的数据集文件（带时间戳）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_dataset_path = os.path.join(output_dir, f"llmsr_train_v2_refreshed_{timestamp}.parquet")
+        
+        table = pa.Table.from_pylist(updated_entries)
+        pq.write_table(table, new_dataset_path)
+        
+        print(f"✅ 数据集刷新完成: {new_dataset_path}")
+        print(f"🎯 新few-shot样本数: {len(examples)}")
+        
+        return new_dataset_path
+        
+    except Exception as e:
+        print(f"❌ 数据集刷新失败: {e}")
+        # 如果失败，重新创建数据集
+        print(f"🔄 回退到重新创建数据集...")
+        return create_llmsr_dataset_v2(
+            template_path=template_path,
+            data_path=data_path,
+            output_dir=output_dir,
+            memory_dir=memory_dir,
+            grid_train_data=grid_train_data,
+            num_grid_groups=num_grid_groups,
+            few_shot_k=few_shot_k,
+            num_islands=num_islands,
+            top_k_per_island=top_k_per_island,
+        )
 
 
 def create_llmsr_dataset_v2(
@@ -343,9 +625,9 @@ def create_llmsr_dataset_v2(
         spec_text = f.read()
     base_prompt = _extract_prompt_header(spec_text)
 
-    # 🔥 V2改进版：few-shot 拼接 + 护栏提示（英文）
+    # 🔥 V2改进版：few-shot 拼接 + 护栏提示（英文）- 使用随机采样
     memory = MemoryManagerV2(memory_dir, top_k_per_island=top_k_per_island, num_islands=num_islands)
-    examples = memory.sample_few_shot(k=few_shot_k)
+    examples = memory.sample_few_shot(k=few_shot_k, use_random_sampling=True)
     
     if examples:
         # 🔥 添加护栏说明（英文）
@@ -500,7 +782,14 @@ def create_llmsr_reward_file_v2(
     # 🏝️ 群岛机制超参数
     num_islands: int = 4,           # 群岛数量
     top_k_per_island: int = 8,      # 每个岛屿保存的top样本数
+    # 🔥 数据集刷新参数
+    refresh_manager_config: Dict[str, Any] = None,  # 数据集刷新管理器配置
 ) -> str:
+    # 🔥 生成刷新管理器配置字符串
+    refresh_config_str = "None"
+    if refresh_manager_config:
+        refresh_config_str = repr(refresh_manager_config)
+    
     code = f'''"""
 Wrapper for v2 reward to plug into VERL custom_reward_function.
 """
@@ -530,6 +819,7 @@ def compute_score(data_sources=None, solution_strs=None, ground_truths=None, ext
         enable_process_reward={enable_process_reward},
         num_islands={num_islands},
         top_k_per_island={top_k_per_island},
+        refresh_manager_config={refresh_config_str},
         **kwargs
     )
 '''
@@ -1022,7 +1312,7 @@ def create_grpo_config_v2(
                 "num_cpus": None,
                 "runtime_env": {
                     "env_vars": {
-                        "PYTHONPATH": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR"
+                        "PYTHONPATH": os.environ.get("LOCAL_PYTHON_PATH", "")
                     }
                 }
             }
@@ -1137,6 +1427,21 @@ def train_llmsr_grpo_v2(
         enable_process_reward=enable_process_reward,
         num_islands=num_islands,
         top_k_per_island=top_k_per_island,
+        # 🔥 传递数据集刷新参数（简化版）
+        refresh_manager_config={
+            "output_dir": output_dir,
+            "refresh_params": {
+                "current_dataset_path": dataset_path,
+                "template_path": template_path,
+                "data_path": data_path,
+                "memory_dir": memory_dir,
+                "grid_train_data": grid_train_data,
+                "num_grid_groups": num_grid_groups,
+                "few_shot_k": few_shot_k,
+                "num_islands": num_islands,
+                "top_k_per_island": top_k_per_island,
+            }
+        }
     )
 
     # 3) 配置
@@ -1198,6 +1503,3 @@ def train_llmsr_grpo_v2(
                 json.dump(best_mse_rec, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
-
-

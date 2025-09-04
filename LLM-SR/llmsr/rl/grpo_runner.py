@@ -32,6 +32,8 @@ try:
 except Exception:
     wandb = None
 
+os.environ["PYTHONPATH"] = "/home/aiops/changma/miniconda3/envs/verl"
+
 
 def _force_wandb_cloud() -> None:
     """确保使用官方云：移除环境中的 WANDB_BASE_URL（若存在）。"""
@@ -996,7 +998,7 @@ def create_grpo_config_direct(
                 "num_cpus": None,
                 "runtime_env": {
                     "env_vars": {
-                        "PYTHONPATH": "/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/verl:/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR"
+                        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
                     }
                 }
             }
