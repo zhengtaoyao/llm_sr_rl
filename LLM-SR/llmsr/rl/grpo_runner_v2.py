@@ -1286,7 +1286,7 @@ def create_grpo_config_v2(
             "total_training_steps": None,
             "project_name": "llm_sr_grpo_v2",
             "experiment_name": "direct_weight_tuning_v2",
-            "logger": ["console"],
+            "logger": ["console", "wandb"],
             "n_gpus_per_node": gpus,
             "nnodes": 1,
             "save_freq": 2,

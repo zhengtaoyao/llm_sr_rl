@@ -2,3 +2,5 @@ LLM-SR/llmsr_logs
 LLM-SR/llmsr_grpo_outputs
 __pycache__
 LLM-SR/logs
+LLM-SR/wandb
+*/__pycache__/

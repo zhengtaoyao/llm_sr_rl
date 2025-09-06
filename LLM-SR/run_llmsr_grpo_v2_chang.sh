@@ -3,6 +3,14 @@ set -euo pipefail
 
 # 🔥 v2 训练脚本（nohup 后台执行）- 大token长度优化版本
 
+export WANDB_API_KEY="0824c860323f310aa17f7f55675f94200d116cfd"
+export WANDB_PROJECT=${WANDB_PROJECT:-"llm_sr_grpo_v2"}
+export WANDB_ENTITY="changma"
+export WANDB_MODE="online"  # 可选值: online
+# 可选值: online, offline, disabled
+# 若不使用 wandb，请设置为 disabled
+# export WANDB_MODE="disabled"
+
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 GPUS=${GPUS:-8}
 
