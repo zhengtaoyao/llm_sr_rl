@@ -202,7 +202,7 @@ else
 fi
 
 echo -e "${BLUE}[NOHUP] ${CMD[*]}${NC}"
-nohup "${CMD[@]}" >> "$LOG_FILE" 2>&1 &
+"${CMD[@]}" 
 GRPO_PID=$!
 
 echo -e "${GREEN}✅ GRPO v2训练已启动 (PID: $GRPO_PID)${NC}"

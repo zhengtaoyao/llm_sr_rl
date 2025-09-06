@@ -16,6 +16,7 @@ import numpy as np
 import os, json, time
 import ast
 import pandas as pd
+import wandb
 from pathlib import Path
 
 
@@ -251,6 +252,9 @@ def compute_score(
                     rec["process_reward_details"] = {"enabled": False}
                 with open(jsonl_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                
+                
+                wandb.log(rec) # 🔥 记录到wandb
             except Exception as e:
                 print(f"⚠️ 记录sample.jsonl失败: {e}")
                 pass

@@ -17,6 +17,7 @@ import ast
 import copy
 import multiprocessing
 import time
+import wandb
 import math
 from pathlib import Path
 from typing import Any, List, Dict, Tuple
@@ -237,6 +238,7 @@ def evaluate_single_solution_fixed(solution_str: str, inputs: np.ndarray, output
         
         # 记录成功的评估
         _log_to_jsonl(log_info)
+        wandb.log(log_info)  # 🔥 记录到wandb
         
         return reward
         

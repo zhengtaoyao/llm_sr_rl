@@ -497,9 +497,9 @@ def create_grpo_config_direct(
 
     # 直连模式 GRPO 配置
     # 按需选择 logger
-    trainer_loggers = ["console"]
-    if _is_wandb_enabled():
-        trainer_loggers.append("wandb")
+    trainer_loggers = ["console", "wandb"]
+    # if _is_wandb_enabled():
+    #     trainer_loggers.append("wandb")
 
     config = {
         # 算法配置
