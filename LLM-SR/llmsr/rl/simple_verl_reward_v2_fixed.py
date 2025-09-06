@@ -48,6 +48,8 @@ def compute_score(
     # 🏝️ 群岛机制超参数
     num_islands=4,              # 群岛数量
     top_k_per_island=8,         # 每个岛屿保存的top样本数
+    # 🔥 数据集刷新管理器配置
+    refresh_manager_config=None, # 数据集刷新管理器配置
     **kwargs,
 ):
     print(f"🔥🔥🔥 FIXED V2 REWARD FUNCTION CALLED! 🔥🔥🔥")
@@ -140,12 +142,21 @@ def compute_score(
 
     # 🔥 初始化memory管理器（用于更新memory）- V2改进版：自适应分位数
     memory_manager = None
+    
+    # 🔥 简化：准备数据集刷新参数（仅在需要时使用）
+    dataset_refresh_params = None
+    if refresh_manager_config and isinstance(refresh_manager_config, dict):
+        refresh_params = refresh_manager_config.get("refresh_params", {})
+        if refresh_params:
+            dataset_refresh_params = refresh_params.copy()
+            dataset_refresh_params["output_dir"] = out_dir or refresh_manager_config.get("output_dir", "./")
+    
     if memory_dir and os.path.exists(memory_dir):
         try:
             # 导入MemoryManagerV2（需要确保路径正确）
             import sys
             sys.path.append("/storage/home/westlakeLab/zhangjunlei/llm_sr_rl/LLM-SR")
-            from llmsr.rl.grpo_runner_v2 import MemoryManagerV2
+            from llmsr.rl.grpo_runner_v2 import MemoryManagerV2, refresh_dataset_with_islands
             
             # 🔥 V2改进版：添加自适应参数
             memory_manager = MemoryManagerV2(
@@ -156,6 +167,8 @@ def compute_score(
                 recent_samples_window=200  # 基于最近200个样本计算分位数
             )
             print(f"✅ V2 成功初始化自适应memory管理器: {memory_dir} (岛屿:{num_islands}, 每岛top-k:{top_k_per_island}, 自适应更新)")
+            print(f"🔄 数据集刷新阈值: 每{memory_manager._dataset_refresh_threshold}个新群岛样本触发一次刷新")
+            
         except Exception as e:
             print(f"⚠️ V2 memory管理器初始化失败: {e}")
             memory_manager = None
@@ -247,13 +260,50 @@ def compute_score(
             try:
                 function_body = extract_function_body_v2(code)
                 if function_body:  # 确保函数体不为空
-                    memory_manager.add_sample(
+                    # 🔥 调用add_sample并检查是否需要刷新数据集
+                    need_refresh = memory_manager.add_sample(
                         function_body=function_body,
                         score=final_reward,
                         mse=mse,
                         complexity=complexity
                     )
                     print(f"🎯 V2 成功添加样本到memory，score: {final_reward:.3f}")
+                    
+                    # 🔥 如果需要刷新数据集，立即执行
+                    if need_refresh and dataset_refresh_params:
+                        try:
+                            print(f"🔄 触发数据集刷新（新样本数>=8）...")
+                            
+                            # 获取当前数据集路径
+                            current_dataset = dataset_refresh_params.get("current_dataset_path")
+                            if current_dataset and os.path.exists(current_dataset):
+                                new_dataset_path = refresh_dataset_with_islands(
+                                    dataset_path=current_dataset,
+                                    template_path=dataset_refresh_params.get("template_path"),
+                                    data_path=dataset_refresh_params.get("data_path"),
+                                    memory_dir=memory_dir,
+                                    output_dir=dataset_refresh_params["output_dir"],
+                                    grid_train_data=dataset_refresh_params.get("grid_train_data", False),
+                                    num_grid_groups=dataset_refresh_params.get("num_grid_groups", 10),
+                                    few_shot_k=dataset_refresh_params.get("few_shot_k", 3),
+                                    num_islands=num_islands,
+                                    top_k_per_island=top_k_per_island,
+                                )
+                                
+                                if new_dataset_path != current_dataset:
+                                    print(f"✅ 数据集刷新完成: {new_dataset_path}")
+                                    # 🔥 创建信号文件，通知可能的外部监控
+                                    signal_file = os.path.join(dataset_refresh_params["output_dir"], "dataset_refreshed.signal")
+                                    with open(signal_file, "w") as f:
+                                        json.dump({
+                                            "timestamp": time.time(),
+                                            "new_dataset_path": new_dataset_path,
+                                            "trigger": "new_samples_threshold_reached",
+                                            "new_samples_count": 8
+                                        }, f, indent=2)
+                                
+                        except Exception as refresh_e:
+                            print(f"❌ 数据集刷新失败: {refresh_e}")
             except Exception as e:
                 print(f"⚠️ V2 添加样本到memory失败: {e}")
                 pass
